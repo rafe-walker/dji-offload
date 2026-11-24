@@ -52,6 +52,25 @@ for any DJI drone anywhere.
   plugged in, the Mac is swept for every DJI file (by name), each one is
   matched against the backup by size and BLAKE3 hash, and anything missing is
   copied over, keeping the date/flight folders.
+- **Checks the shoot before you leave.** Right after the offload it flags
+  soft or badly exposed photos, and checks coverage of the parcel. For
+  mapping grids that means photo footprints over the parcel ("NE corner not
+  covered"); for real-estate obliques, which sides of the property were shot
+  from. Each flight also gets a `map.kml` (photo positions, path, parcel
+  outlines) that opens in Google Earth.
+- **Knows who a flight is for.** A dialog asks whether a flight is for a
+  **client**, the **library** (already-flown catalog), **promo** (your own
+  marketing), or any mix. Then:
+  - *Client* → `Delivery - <address> - <date>/` with web-sized photos (no GPS
+    in the files), a contact-sheet PDF, the map and the shoot summary.
+  - *Library* → `Library Sample/` watermarked previews for prospective buyers,
+    plus a row in `Library/catalog.csv` (APN, address, acres, jurisdiction,
+    date, counts).
+  - *Promo* → a row in `Promo/promo.csv`.
+  Choose *Later* and tag any time with `dji-offload tag`.
+- **Keeps a flight log.** `flight-log.csv` lists every flight: date, times,
+  minutes, parcel, address, counts, GB, client and uses. It's handy for Part
+  107 records and invoicing.
 - **Tells you when it's done.** A notification shows how many files and GB were
   verified, then the drone is ejected so it's safe to unplug.
 
@@ -59,10 +78,11 @@ for any DJI drone anywhere.
 
 ```sh
 curl -fsSL https://github.com/rafe-walker/dji-offload/releases/latest/download/dji-offload-macos-universal.tar.gz | tar xz
-./dji-offload install        # registers the auto-run agent, downloads parcel data once
+./dji-offload install        # auto-run agent, parcel data, and a `dji-offload` Terminal shortcut
 ```
 
-Then plug in the drone. The first time, macOS asks whether `dji-offload` may
+`install` adds `~/.local/bin/dji-offload` so you can type `dji-offload`
+anywhere (`--no-shortcut` to skip). Then plug in the drone. The first time, macOS asks whether `dji-offload` may
 access files on a removable volume: choose **Allow**.
 
 Optional: `dji-offload mark-drive /Volumes/YourBackupDrive` to copy every
@@ -73,7 +93,8 @@ offload there as well.
 | Command | What it does |
 | --- | --- |
 | `dji-offload run` | Offload any connected drone now (`--dry-run` to preview) |
-| `dji-offload set wipe ask` | Change a setting: `wipe` (never/ask/always), `gap`, `low-space`, `eject`, `parcels`, `destination` |
+| `dji-offload tag FLIGHT [--client NAME] [--library] [--promo] [--package P] [--ask] [--clear]` | Say who a flight is for and (re)build its deliverables |
+| `dji-offload set wipe ask` | Change a setting: `wipe` (never/ask/always), `ask-job` (ask/never), `watermark TEXT`, `checks` (on/off), `gap`, `low-space`, `eject`, `parcels`, `destination` |
 | `dji-offload status` | Settings, destinations, parcel data age, connected drones |
 | `dji-offload parcels update` | Refresh the offline parcel and city-limits data |
 | `dji-offload parcels lookup LAT LON` | Look up the parcel at a point |

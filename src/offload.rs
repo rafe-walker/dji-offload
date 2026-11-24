@@ -26,6 +26,8 @@ pub struct Summary {
     pub warnings: Vec<String>,
     /// e.g. "2026-04-28/Flight-1_1827_APN-999-12-345A"
     pub folders: BTreeSet<String>,
+    /// Flights that received new files in the main destination, with their folder there.
+    pub touched: Vec<(Flight, Place, PathBuf)>,
 }
 
 pub struct Offloader<'a> {
@@ -187,6 +189,13 @@ impl Offloader<'_> {
 
         // 4. Summaries.
         let source_note = self.lookup.and_then(|l| l.updated()).map(|u| u.chars().take(10).collect::<String>());
+        for &(di, fi) in &written {
+            if di == 0 {
+                let f = &known[fi];
+                let dir = self.dests[0].join(f.date.to_string()).join(f.folder.clone().unwrap_or_default());
+                sum.touched.push((f.clone(), places[fi].clone(), dir));
+            }
+        }
         for (di, fi) in written {
             let f = &known[fi];
             let dir = self.dests[di].join(f.date.to_string()).join(f.folder.clone().unwrap_or_default());

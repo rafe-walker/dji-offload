@@ -24,7 +24,8 @@ impl Ledger {
              CREATE TABLE IF NOT EXISTS copied(dest TEXT, key TEXT, rel TEXT, hash TEXT, at TEXT, PRIMARY KEY(dest, key));
              CREATE TABLE IF NOT EXISTS flights(date TEXT, num INTEGER, start TEXT, end TEXT, folder TEXT, place TEXT, PRIMARY KEY(date, num));
              CREATE TABLE IF NOT EXISTS file_flight(key TEXT PRIMARY KEY, date TEXT, num INTEGER);
-             CREATE TABLE IF NOT EXISTS hash_cache(path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER, hash TEXT);",
+             CREATE TABLE IF NOT EXISTS hash_cache(path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER, hash TEXT);
+             CREATE TABLE IF NOT EXISTS jobs(date TEXT, num INTEGER, job TEXT, at TEXT, PRIMARY KEY(date, num));",
         )?;
         Ok(Self { db })
     }
@@ -122,6 +123,50 @@ impl Ledger {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn job(&self, date: NaiveDate, num: u32) -> Result<Option<crate::jobs::Job>> {
+        let j: Option<String> = self
+            .db
+            .query_row("SELECT job FROM jobs WHERE date=?1 AND num=?2", params![date.to_string(), num], |r| r.get(0))
+            .optional()?;
+        Ok(j.and_then(|j| serde_json::from_str(&j).ok()))
+    }
+
+    pub fn set_job(&self, date: NaiveDate, num: u32, job: &crate::jobs::Job) -> Result<()> {
+        self.db.execute(
+            "INSERT OR REPLACE INTO jobs VALUES (?1, ?2, ?3, ?4)",
+            params![date.to_string(), num, serde_json::to_string(job)?, chrono::Local::now().to_rfc3339()],
+        )?;
+        Ok(())
+    }
+
+    /// Client names, most recently used first.
+    pub fn recent_clients(&self, limit: usize) -> Result<Vec<String>> {
+        let mut st = self.db.prepare("SELECT job FROM jobs ORDER BY at DESC")?;
+        let mut out: Vec<String> = Vec::new();
+        for j in st.query_map([], |r| r.get::<_, String>(0))? {
+            if let Ok(job) = serde_json::from_str::<crate::jobs::Job>(&j?)
+                && let Some(c) = job.client
+                    && !out.contains(&c) {
+                        out.push(c);
+                    }
+            if out.len() >= limit {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Every flight ever recorded, oldest first.
+    pub fn all_flights(&self) -> Result<Vec<(Flight, Place)>> {
+        let mut st = self.db.prepare("SELECT DISTINCT date FROM flights ORDER BY date")?;
+        let dates: Vec<String> = st.query_map([], |r| r.get(0))?.collect::<Result<_, _>>()?;
+        let mut out = Vec::new();
+        for d in dates {
+            out.extend(self.flights_on(d.parse()?)?);
+        }
+        Ok(out)
     }
 
     pub fn file_flight(&self, key: &str) -> Result<Option<(NaiveDate, u32)>> {

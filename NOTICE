@@ -7,3 +7,8 @@ Enterprises LLC, licensed under the Apache License, Version 2.0.
 Parcel data is published by the Cochise County Assessor. City boundary data is
 published by the Arizona Department of Revenue. Neither is distributed with
 this software; it is downloaded by the user at run time.
+
+The watermark font assets/Roboto-Bold-subset.ttf is Roboto Bold, Copyright
+2011 Google Inc., licensed under the Apache License, Version 2.0 (see
+assets/LICENSE-Roboto.txt). It was modified: subset to Latin-1 and common
+punctuation, with the OpenType layout tables removed.

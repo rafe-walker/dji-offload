@@ -34,6 +34,17 @@ pub struct Config {
     pub backup_scan_roots: Vec<PathBuf>,
     /// Folder created on backup drives.
     pub backup_folder: String,
+    /// After an offload, ask who each new flight is for (client, library,
+    /// promo): "ask" or "never". Tag later with `dji-offload tag`.
+    pub ask_job: String,
+    /// Long edge in pixels of the web-sized JPEGs in a client Delivery folder.
+    pub delivery_long_edge: u32,
+    /// Text stamped on library samples sent to prospective buyers.
+    pub watermark_text: String,
+    /// How many watermarked samples to make per library flight.
+    pub library_sample_count: usize,
+    /// Run the blur/exposure and coverage checks after each offload.
+    pub field_checks: bool,
 }
 
 impl Default for Config {
@@ -51,6 +62,11 @@ impl Default for Config {
             low_space_warn_gb: 20.0,
             backup_scan_roots: vec![dirs::home_dir().unwrap_or_default()],
             backup_folder: "Drone Backup".into(),
+            ask_job: "ask".into(),
+            delivery_long_edge: 2560,
+            watermark_text: "SAMPLE".into(),
+            library_sample_count: 6,
+            field_checks: true,
         }
     }
 }
@@ -109,11 +125,27 @@ impl Config {
                 self.parcels = yes(value)?;
                 format!("Parcel tagging: {}", if self.parcels { "on" } else { "off" })
             }
+            "ask-job" => {
+                let v = value.to_lowercase();
+                if !matches!(v.as_str(), "ask" | "never") {
+                    anyhow::bail!("ask-job must be ask or never");
+                }
+                self.ask_job = v.clone();
+                format!("Ask who each flight is for: {v}")
+            }
+            "watermark" => {
+                self.watermark_text = value.to_string();
+                format!("Library sample watermark: {value}")
+            }
+            "checks" => {
+                self.field_checks = yes(value)?;
+                format!("Blur/exposure and coverage checks: {}", if self.field_checks { "on" } else { "off" })
+            }
             "destination" => {
                 self.destination = PathBuf::from(value);
                 format!("Main copy goes to {}", self.destination.display())
             }
-            _ => anyhow::bail!("unknown setting `{key}`; try wipe, gap, low-space, eject, parcels or destination"),
+            _ => anyhow::bail!("unknown setting `{key}`; try wipe, ask-job, watermark, checks, gap, low-space, eject, parcels or destination"),
         };
         self.save()?;
         Ok(msg)

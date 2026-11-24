@@ -82,7 +82,7 @@ fn clean(s: &str) -> Option<String> {
 
 // ---------- geometry ----------
 
-type Ring = Vec<(f64, f64)>; // (lon, lat)
+pub type Ring = Vec<(f64, f64)>; // (lon, lat)
 
 fn rings_of(geom: &Value) -> Vec<Ring> {
     let ring = |r: &Value| -> Ring {
@@ -346,6 +346,27 @@ impl Lookup {
         Ok(None)
     }
 
+    /// Outline of a parcel by APN, raw (`99912345A`) or formatted (`999-12-345A`).
+    /// Rings from every feature carrying that APN are returned together.
+    pub fn geometry(&self, apn: &str) -> Result<Option<Vec<Ring>>> {
+        let key: String = apn.trim().chars().filter(|c| *c != '-').collect::<String>().to_uppercase();
+        if key.is_empty() {
+            return Ok(None);
+        }
+        let mut st = self
+            .db
+            .prepare_cached("SELECT geom FROM parcels WHERE UPPER(REPLACE(TRIM(apn), '-', '')) = ?1")?;
+        let mut rows = st.query(params![key])?;
+        let mut rings = Vec::new();
+        let mut found = false;
+        while let Some(r) = rows.next()? {
+            let geom: Vec<u8> = r.get(0)?;
+            rings.extend(decode(&geom));
+            found = true;
+        }
+        Ok(found.then_some(rings))
+    }
+
     pub fn city(&self, lat: f64, lon: f64) -> Result<Option<String>> {
         let mut st = self.db.prepare_cached(
             "SELECT c.name, c.geom FROM cities_rt r JOIN cities c ON c.id = r.id
@@ -467,5 +488,10 @@ mod tests {
         assert_eq!(place.main().unwrap().apn, "999-12-345A");
         assert_eq!(place.parcels.len(), 2);
         assert_eq!(place.city_label(), "Unincorporated Cochise County");
+        let g = l.geometry("999-12-345A").unwrap().unwrap();
+        assert_eq!(g.len(), 1);
+        assert!(contains(&g, -110.012345, 31.912345));
+        assert_eq!(l.geometry("99912345a").unwrap(), Some(g));
+        assert_eq!(l.geometry("999-99-999").unwrap(), None);
     }
 }

@@ -214,15 +214,15 @@ mod tests {
         let ledger = Ledger::open(&d.path().join("l.db")).unwrap();
         let mut log = |_: &str| {};
 
-        let found = find(&[home.clone()], &[]);
+        let found = find(std::slice::from_ref(&home), &[]);
         assert_eq!(found.len(), 3);
-        let r = sweep(&ledger, &found, &backup, &[sorted.clone()], false, &mut log).unwrap();
+        let r = sweep(&ledger, &found, &backup, std::slice::from_ref(&sorted), false, &mut log).unwrap();
         assert_eq!((r.copied, r.duplicates, r.already, r.errors.len()), (2, 1, 0, 0));
         assert!(backup.join("2026-04-28/Flight-1_1827/DJI_20260428182706_0001_D.JPG").exists());
         assert!(backup.join("2026-05-01/Found/DJI_20260501090000_0007_D.MP4").exists());
 
         // Second sweep: nothing to do.
-        let r = sweep(&ledger, &found, &backup, &[sorted.clone()], false, &mut log).unwrap();
+        let r = sweep(&ledger, &found, &backup, std::slice::from_ref(&sorted), false, &mut log).unwrap();
         assert_eq!((r.copied, r.duplicates, r.already), (0, 1, 2));
 
         // A different file under a name the backup already has: kept as a conflict.

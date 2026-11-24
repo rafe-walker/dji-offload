@@ -22,7 +22,7 @@ jobs:
         with:
           components: clippy
       - run: cargo test --locked
-      - run: cargo clippy --locked -- -D warnings
+      - run: cargo clippy --locked --all-targets -- -D warnings
 
   release:
     if: github.event_name == 'release'

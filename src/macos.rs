@@ -108,3 +108,41 @@ pub fn uninstall() -> Result<()> {
 pub fn installed() -> bool {
     agent_plist().map(|p| p.exists()).unwrap_or(false)
 }
+
+/// `~/.local/bin/dji-offload` -> the installed binary, so `dji-offload` works
+/// in Terminal. Adds `~/.local/bin` to PATH in ~/.zprofile if no shell
+/// startup file mentions it yet. Returns the shortcut path.
+pub fn add_shortcut(bin: &Path) -> Result<PathBuf> {
+    let home = dirs::home_dir().context("no home")?;
+    let dir = home.join(".local/bin");
+    fs::create_dir_all(&dir)?;
+    let link = dir.join("dji-offload");
+    if link.symlink_metadata().is_ok() {
+        fs::remove_file(&link)?;
+    }
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(bin, &link).context("creating the shortcut")?;
+    let mentioned = [".zshrc", ".zprofile", ".bash_profile", ".bashrc", ".profile"]
+        .iter()
+        .filter_map(|f| fs::read_to_string(home.join(f)).ok())
+        .any(|t| t.lines().any(|l| !l.trim_start().starts_with('#') && l.contains(".local/bin")));
+    if !mentioned {
+        let mut text = fs::read_to_string(home.join(".zprofile")).unwrap_or_default();
+        if !text.is_empty() && !text.ends_with('\n') {
+            text.push('\n');
+        }
+        text.push_str("# added by dji-offload: lets you type `dji-offload` in Terminal\nexport PATH=\"$HOME/.local/bin:$PATH\"\n");
+        fs::write(home.join(".zprofile"), text)?;
+    }
+    Ok(link)
+}
+
+/// Remove the shortcut if it points at our binary.
+pub fn remove_shortcut() -> Result<()> {
+    let link = dirs::home_dir().context("no home")?.join(".local/bin/dji-offload");
+    if let Ok(target) = fs::read_link(&link)
+        && target.to_string_lossy().contains("dji-offload/bin/dji-offload") {
+            fs::remove_file(&link)?;
+        }
+    Ok(())
+}

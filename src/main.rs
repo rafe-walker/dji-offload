@@ -5,13 +5,19 @@
 mod backup;
 mod config;
 mod copy;
+mod coverage;
 mod detect;
 mod flights;
 mod geo;
+mod imaging;
+mod jobs;
+mod kml;
 mod ledger;
 mod macos;
 mod media;
 mod offload;
+mod outputs;
+mod records;
 mod report;
 mod space;
 mod wipe;
@@ -78,10 +84,37 @@ enum Cmd {
         #[arg(long)]
         yes: bool,
     },
-    /// Run automatically whenever the drone is plugged in (macOS launchd agent).
-    Install,
+    /// Run automatically whenever the drone is plugged in (macOS launchd agent),
+    /// and add a `dji-offload` shortcut for Terminal.
+    Install {
+        /// Don't add the Terminal shortcut (~/.local/bin/dji-offload).
+        #[arg(long)]
+        no_shortcut: bool,
+    },
     /// Remove the launchd agent. Copied footage is never touched.
     Uninstall,
+    /// Say who a flight is for, then (re)build its deliverables:
+    /// `tag ~/Drone/2026-04-28/Flight-1_1827 --client "Example Realty" --library`.
+    Tag {
+        /// The flight folder (or just its name, e.g. Flight-1_1827).
+        folder: PathBuf,
+        #[arg(long)]
+        client: Option<String>,
+        /// Add to the already-flown library (catalog + watermarked samples).
+        #[arg(long)]
+        library: bool,
+        /// Mark for your own marketing.
+        #[arg(long)]
+        promo: bool,
+        #[arg(long)]
+        package: Option<String>,
+        /// Remove all tags first.
+        #[arg(long)]
+        clear: bool,
+        /// Pick with the same dialog shown after an offload.
+        #[arg(long)]
+        ask: bool,
+    },
     /// Show settings, destinations and parcel database age.
     Status,
     /// Change a setting, e.g. `set wipe ask` (never | ask | always),
@@ -237,6 +270,7 @@ fn run(source: Option<PathBuf>, dry_run: bool, no_eject: bool, auto: bool) -> Re
                 }
             }
         }
+        post_process(&cfg, &ledger, lookup.as_ref(), &sum.touched);
     }
 
     if !dry_run {
@@ -263,6 +297,74 @@ fn run(source: Option<PathBuf>, dry_run: bool, no_eject: bool, auto: bool) -> Re
         }
     }
     Ok(())
+}
+
+/// After an offload: ask who each new flight is for, run the field checks,
+/// build deliverables, refresh the spreadsheets. Problems here never undo
+/// or block the offload itself.
+fn post_process(cfg: &Config, ledger: &ledger::Ledger, lookup: Option<&geo::Lookup>, touched: &[(flights::Flight, geo::Place, PathBuf)]) {
+    let mut last = jobs::Job::default();
+    for (flight, place, dir) in touched {
+        let where_ = place.main().map(|p| format!("APN {}", p.apn)).unwrap_or_else(|| "no parcel".into());
+        let label = format!("Flight {} on {} ({where_})", flight.num, flight.date);
+        let result = (|| -> Result<()> {
+            let mut job = ledger.job(flight.date, flight.num)?.unwrap_or_default();
+            if job.is_empty() && cfg.ask_job == "ask"
+                && let Some(j) = jobs::ask(&label, &ledger.recent_clients(8)?, &last) {
+                    ledger.set_job(flight.date, flight.num, &j)?;
+                    last = j.clone();
+                    job = j;
+                }
+            process_flight(cfg, lookup, flight, place, dir, &job, &label, true)
+        })();
+        if let Err(e) = result {
+            eprintln!("after-offload step for {label}: {e:#}");
+            macos::notify("Drone offload: follow-up problem", &format!("{label}: {e}. Your files are safe."));
+        }
+    }
+    if let Err(e) = rebuild_records(cfg, ledger) {
+        eprintln!("updating spreadsheets: {e:#}");
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn process_flight(
+    cfg: &Config,
+    lookup: Option<&geo::Lookup>,
+    flight: &flights::Flight,
+    place: &geo::Place,
+    dir: &std::path::Path,
+    job: &jobs::Job,
+    label: &str,
+    notify: bool,
+) -> Result<()> {
+    let report = if cfg.field_checks { Some(outputs::field_checks(dir, label, place, lookup)?) } else { None };
+    let flagged = report.as_ref().map(|r| r.flagged.clone()).unwrap_or_default();
+    if let Some(r) = &report {
+        println!("{label}: {}", r.headline());
+        if notify {
+            let title = if r.needs_attention() { "Drone offload: check before you leave" } else { "Drone offload: field checks passed" };
+            macos::notify(title, &format!("Flight {}: {}", flight.num, r.headline()));
+        }
+    }
+    let notes = outputs::build(dir, flight, place, job, cfg, &flagged)?;
+    if !notes.is_empty() {
+        println!("{label}: {}", notes.join("; "));
+        if notify {
+            macos::notify("Drone offload", &format!("Flight {}: {}", flight.num, notes.join("; ")));
+        }
+    }
+    Ok(())
+}
+
+fn rebuild_records(cfg: &Config, ledger: &ledger::Ledger) -> Result<()> {
+    let mut rows = Vec::new();
+    for (flight, place) in ledger.all_flights()? {
+        let dir = cfg.destination.join(flight.date.to_string()).join(flight.folder.clone().unwrap_or_default());
+        let job = ledger.job(flight.date, flight.num)?.unwrap_or_default();
+        rows.push(records::Row { flight, place, job, dir });
+    }
+    records::rebuild(&cfg.destination, &rows)
 }
 
 /// Backup sweep onto every marked backup drive (or just `to`).
@@ -425,9 +527,15 @@ fn main() -> Result<()> {
             println!("Deleted {n} files from {}.", src.mount.display());
             Ok(())
         }
-        Cmd::Install => {
+        Cmd::Install { no_shortcut } => {
             let plist = macos::install(&state_dir()?)?;
             println!("Installed launchd agent: {}", plist.display());
+            if no_shortcut {
+                macos::remove_shortcut()?;
+            } else {
+                let link = macos::add_shortcut(&state_dir()?.join("bin/dji-offload"))?;
+                println!("Shortcut: {} (open a new Terminal window, then type `dji-offload`)", link.display());
+            }
             if !parcel_db()?.exists() {
                 println!("Fetching the parcel database (one time, ~50 MB download)…");
                 if let Err(e) = geo::update(&parcel_db()?, &mut |_, _| {}) {
@@ -439,7 +547,49 @@ fn main() -> Result<()> {
         }
         Cmd::Uninstall => {
             macos::uninstall()?;
+            macos::remove_shortcut()?;
             println!("Removed the launchd agent. Your footage and settings were not touched.");
+            Ok(())
+        }
+        Cmd::Tag { folder, client, library, promo, package, clear, ask } => {
+            let cfg = Config::load()?;
+            let ledger = ledger::Ledger::open(&state_dir()?.join("ledger.db"))?;
+            let want = folder.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let date_hint = folder
+                .parent()
+                .and_then(|p| p.file_name())
+                .and_then(|n| n.to_string_lossy().parse::<chrono::NaiveDate>().ok());
+            let matches: Vec<_> = ledger
+                .all_flights()?
+                .into_iter()
+                .filter(|(f, _)| f.folder.as_deref() == Some(want.as_str()) && date_hint.is_none_or(|d| d == f.date))
+                .collect();
+            let (flight, place) = match matches.len() {
+                0 => bail!("no flight folder named {want} in the ledger"),
+                1 => matches.into_iter().next().unwrap(),
+                _ => bail!("{want} exists on several dates; pass the full path"),
+            };
+            let mut job = if clear { jobs::Job::default() } else { ledger.job(flight.date, flight.num)?.unwrap_or_default() };
+            if ask {
+                let label = format!("Flight {} on {}", flight.num, flight.date);
+                job = jobs::ask(&label, &ledger.recent_clients(8)?, &job).context("cancelled")?;
+            }
+            if client.is_some() {
+                job.client = client;
+            }
+            job.library |= library;
+            job.promo |= promo;
+            if package.is_some() {
+                job.package = package;
+            }
+            ledger.set_job(flight.date, flight.num, &job)?;
+            println!("Flight {} on {}: {}", flight.num, flight.date, job.label());
+            let dir = cfg.destination.join(flight.date.to_string()).join(flight.folder.clone().unwrap_or_default());
+            let lookup = open_lookup(&cfg);
+            let label = format!("Flight {} on {}", flight.num, flight.date);
+            process_flight(&cfg, lookup.as_ref(), &flight, &place, &dir, &job, &label, false)?;
+            rebuild_records(&cfg, &ledger)?;
+            println!("Spreadsheets updated in {}", cfg.destination.display());
             Ok(())
         }
         Cmd::Set { key, value } => {

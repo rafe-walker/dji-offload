@@ -38,6 +38,10 @@ mount event (launchd StartOnMount)
        ├─ low-space warning for any destination under 20 GB
        ├─ wipe (if enabled): delete only files verified on every destination
        ├─ notify, eject
+       ├─ per new flight: ask who it's for (client / library / promo / later)
+       ├─ field checks: blur/exposure, parcel coverage, map.kml
+       ├─ deliverables: client Delivery folder, library samples
+       ├─ rebuild flight-log.csv, Library/catalog.csv, Promo/promo.csv
        ├─ backup sweep onto any mounted backup drive
        └─ refresh the parcel data if older than 30 days and online
 ```
@@ -147,6 +151,51 @@ offload:
 macOS may ask once whether `dji-offload` can read your Desktop, Documents or
 Downloads during the first sweep. Allow it, or those folders are skipped.
 
+### Field checks (`checks on`)
+Run on the Mac copy right after the offload, so the drone can already be
+unplugged:
+- **Photos:** each JPEG is decoded at reduced size. Sharpness is the variance
+  of the Laplacian; exposure is the share of clipped highlights and shadows.
+  A photo is flagged *soft* when it is far below the flight's median
+  sharpness, *overexposed* or *underexposed* on clipping. Flagged photos are
+  listed in `field-checks.txt` and left out of client deliveries (the
+  originals stay).
+- **Coverage:** reads DJI's XMP (relative altitude, gimbal pitch and yaw) and
+  the lens focal length. If the flight is mostly straight-down shots
+  (mapping), each photo's ground footprint is laid over the main parcel and
+  any part of the parcel left uncovered is named by compass sector. For
+  oblique real-estate shots it counts shots from each side (N/E/S/W) and
+  names any side with none.
+- **Map:** `map.kml` holds the parcel outlines, camera positions and the
+  flight path, with the coverage summary.
+
+A notification says either *field checks passed* or *check before you
+leave*, with what to look at.
+
+### Who a flight is for (`ask-job`)
+After each offload a dialog lists *Library (catalog)*, *Promo*, recent
+clients and *New client…*. Pick any combination, or *Later*. The answer is
+stored in the ledger and drives:
+
+| Use | Output |
+| --- | --- |
+| Client | `Delivery - <address or APN> - <date>/`: `Photos (web)/` (long edge `delivery_long_edge`, metadata stripped), `Contact Sheet.pdf`, `map.kml`, `shoot-info.txt` |
+| Library | `Library Sample/`: `library_sample_count` watermarked previews (`watermark_text`), spread across the flight; a row in `Library/catalog.csv` |
+| Promo | a row in `Promo/promo.csv` |
+
+`dji-offload tag <flight folder> --client "Name" --library --promo` sets or
+changes it later, and rebuilds that flight's outputs. `--ask` shows the
+dialog; `--clear` starts over. Outputs are only ever added; originals are
+never changed.
+
+### Spreadsheets
+Rebuilt from the ledger after every offload and tag, so they always match:
+- `flight-log.csv`: date, flight, start, end, minutes (first to last file),
+  APN, address, acres, jurisdiction, photos, videos, GB, client, library,
+  promo, package, folder.
+- `Library/catalog.csv`: one row per library flight, with the sample folder.
+- `Promo/promo.csv`: one row per promo flight.
+
 ## 3. Files and settings
 
 | Path | What |
@@ -173,7 +222,16 @@ wipe_after_offload = "never"         # "never" | "ask" | "always"
 low_space_warn_gb = 20.0
 backup_scan_roots = ["/Users/<you>"]
 backup_folder = "Drone Backup"       # folder created on backup drives
+ask_job = "ask"                      # "ask" | "never"
+delivery_long_edge = 2560
+watermark_text = "SAMPLE"
+library_sample_count = 6
+field_checks = true
 ```
+
+Common settings can be changed without editing the file:
+`dji-offload set wipe ask`, `set ask-job never`, `set watermark "SAMPLE · Your Company"`,
+`set checks off`, `set gap 15`, `set low-space 30`, `set eject off`.
 
 Set `DJI_OFFLOAD_HOME` to use a different state folder (handy for testing).
 
@@ -197,7 +255,8 @@ feature-service URL and field names in `src/geo.rs`.
 ## 5. Install, upgrade, remove
 
 ```sh
-./dji-offload install      # copy binary into place, register agent, fetch parcels
+./dji-offload install      # copy binary into place, register agent, fetch parcels,
+                           # add ~/.local/bin/dji-offload shortcut (--no-shortcut to skip)
 ./dji-offload status       # confirm "Auto-run: installed" and parcel date
 ./dji-offload uninstall    # remove the agent; footage and settings stay
 ```

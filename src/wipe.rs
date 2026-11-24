@@ -125,7 +125,7 @@ mod tests {
         // Corrupt one copy on the Mac: its original must stay on the drone.
         fs::write(dest.join("x/DJI_20260428182900_0003_D.JPG"), b"bitrot!!!!!!!!!!!!!!!!!!!!!!!!").unwrap();
 
-        let plan = plan(&ledger, &mount, &[dest.clone()], &["LRF".into()]).unwrap();
+        let plan = plan(&ledger, &mount, std::slice::from_ref(&dest), &["LRF".into()]).unwrap();
         assert_eq!(plan.delete.len(), 3, "{:?}", plan.keep); // MP4, its LRF, photo 2
         assert_eq!(plan.keep.len(), 1);
         let (n, errs) = execute(&plan);
