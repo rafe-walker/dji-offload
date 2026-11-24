@@ -78,6 +78,33 @@ impl Config {
             return Ok(c);
         }
         let text = fs::read_to_string(&p)?;
-        toml::from_str(&text).with_context(|| format!("reading {}", p.display()))
+        let c: Config = toml::from_str(&text).with_context(|| format!("reading {}", p.display()))?;
+        // After an upgrade, write any new settings into the file (with their
+        // defaults) so they are visible and editable.
+        let full = toml::to_string_pretty(&c)?;
+        let missing = full
+            .lines()
+            .filter_map(|l| l.split_once(" = ").map(|(k, _)| k.trim()))
+            .any(|k| !text.lines().any(|l| l.trim_start().starts_with(&format!("{k} ")) || l.trim_start().starts_with(&format!("{k}="))));
+        if missing {
+            let _ = fs::write(&p, full);
+        }
+        Ok(c)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upgrade_fills_in_new_settings() {
+        let d = tempfile::tempdir().unwrap();
+        unsafe { std::env::set_var("DJI_OFFLOAD_HOME", d.path()) };
+        fs::write(d.path().join("config.toml"), "destination = \"/tmp/x\"\nflight_gap_minutes = 12\n").unwrap();
+        let c = Config::load().unwrap();
+        assert_eq!((c.flight_gap_minutes, c.wipe_after_offload.as_str()), (12, "never"));
+        let text = fs::read_to_string(d.path().join("config.toml")).unwrap();
+        assert!(text.contains("wipe_after_offload") && text.contains("flight_gap_minutes = 12"), "{text}");
     }
 }
