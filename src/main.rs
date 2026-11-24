@@ -224,7 +224,13 @@ fn run(source: Option<PathBuf>, dry_run: bool, no_eject: bool, auto: bool) -> Re
         if cfg.eject_when_done && !no_eject {
             match macos::eject(&src.mount) {
                 Ok(()) => println!("Ejected {}. Safe to unplug.", src.mount.display()),
-                Err(e) => eprintln!("could not eject: {e:#}"),
+                Err(e) => {
+                    eprintln!("could not eject: {e:#}");
+                    macos::notify(
+                        "Drone offload: eject failed",
+                        "Another app is using the drone. Eject it in Finder before unplugging.",
+                    );
+                }
             }
         }
     }
@@ -293,8 +299,9 @@ fn run_backups(cfg: &Config, ledger: &ledger::Ledger, to: Option<PathBuf>, dry_r
         }
         let name = drive.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
         let msg = format!(
-            "Checked {} files: {} new ({}) backed up to {name}, {} already there{}{}.",
+            "Checked {} files{}: {} new ({}) backed up to {name}, {} already there{}{}.",
             r.found,
+            if r.duplicates > 0 { format!(" ({} duplicate copies on this Mac)", r.duplicates) } else { String::new() },
             r.copied,
             space::gb(r.copied_bytes),
             r.already,
