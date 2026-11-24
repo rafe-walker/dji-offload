@@ -180,7 +180,9 @@ impl Raw {
             return self.data.clone();
         }
         self.data
-            .chunks_exact(3)
+            .as_chunks::<3>()
+            .0
+            .iter()
             .map(|p| ((p[0] as u32 * 77 + p[1] as u32 * 150 + p[2] as u32 * 29 + 128) >> 8) as u8)
             .collect()
     }

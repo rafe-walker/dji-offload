@@ -827,8 +827,8 @@ impl Doc {
     pub fn add_rgba(&mut self, img: &image::RgbaImage) -> ImageRef {
         let (w, h) = img.dimensions();
         let raw = img.as_raw();
-        let rgb: Vec<u8> = raw.chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
-        let alpha: Vec<u8> = raw.chunks_exact(4).map(|p| p[3]).collect();
+        let rgb: Vec<u8> = raw.as_chunks::<4>().0.iter().flat_map(|p| [p[0], p[1], p[2]]).collect();
+        let alpha: Vec<u8> = raw.as_chunks::<4>().0.iter().map(|p| p[3]).collect();
         let smask = if alpha.iter().all(|&a| a == 255) { None } else { Some(deflate(&alpha)) };
         self.push(ImageObj { w, h, pixels: Pixels::Flate { gray: false }, data: deflate(&rgb), smask })
     }

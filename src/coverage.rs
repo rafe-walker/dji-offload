@@ -478,7 +478,7 @@ impl Grid {
                 }
             }
             xs.sort_by(f64::total_cmp);
-            for pair in xs.chunks_exact(2) {
+            for pair in xs.as_chunks::<2>().0 {
                 let col = |x: f64| ((x - self.x0) / self.cell - 0.5).ceil().clamp(0.0, self.nx as f64) as usize;
                 let (a, b) = (col(pair[0]), col(pair[1]));
                 if a < b {
