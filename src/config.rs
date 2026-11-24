@@ -6,6 +6,48 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+/// Your business details, used on client reports. Empty fields are left off.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Brand {
+    pub name: String,
+    pub tagline: String,
+    pub url: String,
+    pub phone: String,
+    pub email: String,
+    /// PNG or JPEG logo (square works best).
+    pub logo: String,
+    /// Cover/background colour, e.g. "#1B1F24".
+    pub dark: String,
+    /// Accent colour for rules, badges and the parcel outline, e.g. "#B08D57".
+    pub accent: String,
+}
+
+impl Default for Brand {
+    fn default() -> Self {
+        Brand {
+            name: String::new(),
+            tagline: String::new(),
+            url: String::new(),
+            phone: String::new(),
+            email: String::new(),
+            logo: String::new(),
+            dark: "#1B1F24".into(),
+            accent: "#B08D57".into(),
+        }
+    }
+}
+
+/// "#C9A84C" -> [201, 168, 76].
+pub fn hex_rgb(s: &str) -> Option<[u8; 3]> {
+    let h = s.trim().trim_start_matches('#');
+    if h.len() != 6 {
+        return None;
+    }
+    let v = u32::from_str_radix(h, 16).ok()?;
+    Some([(v >> 16) as u8, (v >> 8) as u8, v as u8])
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -45,6 +87,12 @@ pub struct Config {
     pub library_sample_count: usize,
     /// Run the blur/exposure and coverage checks after each offload.
     pub field_checks: bool,
+    /// Rename delivered photos by what they show (no camera file names).
+    pub rename_delivery: bool,
+    /// Most photos featured full-size in the client report (all are in its index).
+    pub report_photos: usize,
+    /// Your business, for client reports.
+    pub brand: Brand,
 }
 
 impl Default for Config {
@@ -67,6 +115,9 @@ impl Default for Config {
             watermark_text: "SAMPLE".into(),
             library_sample_count: 6,
             field_checks: true,
+            rename_delivery: true,
+            report_photos: 24,
+            brand: Brand::default(),
         }
     }
 }
@@ -141,11 +192,51 @@ impl Config {
                 self.field_checks = yes(value)?;
                 format!("Blur/exposure and coverage checks: {}", if self.field_checks { "on" } else { "off" })
             }
+            "rename" => {
+                self.rename_delivery = yes(value)?;
+                format!("Rename delivered photos by content: {}", if self.rename_delivery { "on" } else { "off" })
+            }
+            "report-photos" => {
+                self.report_photos = value.parse().context("report-photos is a number")?;
+                format!("Report features up to {} photos", self.report_photos)
+            }
+            k if k.starts_with("brand-") => {
+                let field = &k[6..];
+                let v = value.to_string();
+                match field {
+                    "name" => self.brand.name = v,
+                    "tagline" => self.brand.tagline = v,
+                    "url" => self.brand.url = v,
+                    "phone" => self.brand.phone = v,
+                    "email" => self.brand.email = v,
+                    "dark" | "accent" => {
+                        if hex_rgb(&v).is_none() {
+                            anyhow::bail!("colours look like #C9A84C");
+                        }
+                        if field == "dark" { self.brand.dark = v } else { self.brand.accent = v }
+                    }
+                    "logo" => {
+                        let src = PathBuf::from(&v);
+                        if !src.is_file() {
+                            anyhow::bail!("{} is not a file", src.display());
+                        }
+                        let ext = src.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                        if !matches!(ext.as_str(), "png" | "jpg" | "jpeg") {
+                            anyhow::bail!("the logo must be a PNG or JPEG");
+                        }
+                        let dst = state_dir()?.join(format!("brand-logo.{ext}"));
+                        fs::copy(&src, &dst)?;
+                        self.brand.logo = dst.display().to_string();
+                    }
+                    _ => anyhow::bail!("brand settings: name, tagline, url, phone, email, logo, dark, accent"),
+                }
+                format!("Brand {field} set")
+            }
             "destination" => {
                 self.destination = PathBuf::from(value);
                 format!("Main copy goes to {}", self.destination.display())
             }
-            _ => anyhow::bail!("unknown setting `{key}`; try wipe, ask-job, watermark, checks, gap, low-space, eject, parcels or destination"),
+            _ => anyhow::bail!("unknown setting `{key}`; try wipe, ask-job, watermark, checks, rename, report-photos, brand-*, gap, low-space, eject, parcels or destination"),
         };
         self.save()?;
         Ok(msg)

@@ -179,14 +179,59 @@ stored in the ledger and drives:
 
 | Use | Output |
 | --- | --- |
-| Client | `Delivery - <address or APN> - <date>/`: `Photos (web)/` (long edge `delivery_long_edge`, metadata stripped), `Contact Sheet.pdf`, `map.kml`, `shoot-info.txt` |
-| Library | `Library Sample/`: `library_sample_count` watermarked previews (`watermark_text`), spread across the flight; a row in `Library/catalog.csv` |
+| Client | `Delivery - <address or APN> - <date>/`: `<address> - Aerial Report.pdf`, `Photos (web)/` (renamed, long edge `delivery_long_edge`, metadata stripped), `Photo index.csv`, `<address> - Map.kml` |
+| Library | `Library Sample/`: `library_sample_count` watermarked previews (`watermark_text`): the same distinct views the report features, angled first; a row in `Library/catalog.csv` |
 | Promo | a row in `Promo/promo.csv` |
 
 `dji-offload tag <flight folder> --client "Name" --library --promo` sets or
 changes it later, and rebuilds that flight's outputs. `--ask` shows the
 dialog; `--clear` starts over. Outputs are only ever added; originals are
 never changed.
+
+### Client photo names and captions (`rename on`)
+Each delivered photo is described from its own position data, so names
+mean something to the client and never reveal the camera or aircraft:
+
+- **Where it was taken:** over a part of the parcel ("northwest corner",
+  "centre", "south edge"), or how far and in which direction outside it
+  ("85 m southwest of the parcel").
+- **What kind of shot:** *top-down* (gimbal steeper than 75° down) or
+  *aerial*, plus where the camera looked ("looking northeast").
+- **Light:** the sun's position is computed for the photo's time and place.
+  Frames taken with the sun between −0.8° and 6° are tagged *golden hour*,
+  and between −6° and −0.8° *twilight*. Light goes in the names of angled
+  shots only; on straight-down mapping frames it adds nothing.
+
+Examples: `100-Example-Rd_014_aerial-from-sw_looking-ne_golden-hour.jpg`
+("Aerial from the southwest, looking northeast") and
+`100-Example-Rd_120_top-down-north-edge.jpg`. Underscores separate the
+parts; hyphens join words within a part.
+Numbers follow capture order. The mapping from delivered names back to the
+original files is kept in `delivery-names.csv` in the flight folder, outside
+the Delivery folder. Library samples use the same names with a `SAMPLE_`
+prefix.
+
+### The client report
+`<address> - Aerial Report.pdf`, branded from the `[brand]` settings:
+1. **Cover:** the hero photo (the sharpest angled shot aimed at the
+   property, golden hour preferred), title, APN · acres · jurisdiction,
+   "Prepared for", date, logo, contact links and a QR code to your website.
+2. **Site overview:** a vector map of the parcel and its neighbours with the
+   flight path, every photo position (featured photos numbered),
+   straight-down footprints, a north arrow and scale bar, plus key facts.
+3. **Photo pages:** up to `report_photos` featured photos. Distinct angled
+   views (20 m up or higher; near-repeats from the same spot and heading
+   dropped) each get a full-width page; straight-down frames, spread across
+   the flight, share pages three at a time. Each has its number, caption,
+   direction, height, angle, time, light and delivered file name.
+4. **Photo index:** every delivered photo (up to 300) as a numbered
+   thumbnail with a short caption, featured ones badged.
+5. **Capture & data integrity:** capture window, altitude range, ground
+   resolution, coverage, sun position, coordinate system, parcel-data date,
+   and an archive fingerprint: a BLAKE3 hash over the verified originals that
+   ties the delivery to the archived files.
+
+Nothing in the report or its metadata names the aircraft or camera.
 
 ### Spreadsheets
 Rebuilt from the ledger after every offload and tag, so they always match:
@@ -227,11 +272,25 @@ delivery_long_edge = 2560
 watermark_text = "SAMPLE"
 library_sample_count = 6
 field_checks = true
+rename_delivery = true
+report_photos = 24
+
+[brand]
+name = "Example Aerials"
+tagline = "Licensed & insured"
+url = "https://example.com"
+phone = "(555) 555-0100"
+email = "hello@example.com"
+logo = "…/dji-offload/brand-logo.png"   # set with: dji-offload set brand-logo /path/logo.png
+dark = "#1B1F24"
+accent = "#B08D57"
 ```
 
 Common settings can be changed without editing the file:
 `dji-offload set wipe ask`, `set ask-job never`, `set watermark "SAMPLE · Your Company"`,
-`set checks off`, `set gap 15`, `set low-space 30`, `set eject off`.
+`set checks off`, `set gap 15`, `set low-space 30`, `set eject off`,
+`set rename off`, `set report-photos 30`, `set brand-name "Example Aerials"`,
+`set brand-logo ~/Pictures/logo.png`, `set brand-accent "#B08D57"`.
 
 Set `DJI_OFFLOAD_HOME` to use a different state folder (handy for testing).
 

@@ -1,5 +1,5 @@
 //! Photo work for deliveries: a fast blur/exposure check run right after an
-//! offload, web-size copies, watermarked samples and a PDF contact sheet.
+//! offload, web-size copies and watermarked samples.
 //!
 //! Everything is pure Rust. JPEGs are decoded with `jpeg-decoder`, which can
 //! decode at 1/2, 1/4 or 1/8 scale straight from the DCT coefficients; that
@@ -11,7 +11,6 @@
 //! Every JPEG written here is re-encoded from pixels: EXIF (including GPS),
 //! XMP, maker notes and the DJI debug segments are never copied across.
 
-use std::fmt::Write as _;
 use std::fs;
 use std::io::Cursor;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -222,7 +221,7 @@ fn decode(bytes: &[u8], min_long: u32) -> Result<Raw> {
 
 /// Decode `src` with its long edge at least `min_long` (or full size),
 /// convert to sRGB, and apply the EXIF orientation.
-fn load_rgb(src: &Path, min_long: u32) -> Result<RgbImage> {
+pub(crate) fn load_rgb(src: &Path, min_long: u32) -> Result<RgbImage> {
     let bytes = fs::read(src).with_context(|| format!("reading {}", src.display()))?;
     let raw = decode(&bytes, min_long).with_context(|| format!("decoding {}", src.display()))?;
     let orientation = raw.exif.as_deref().map(exif_orientation).unwrap_or(1);
@@ -272,7 +271,7 @@ fn to_srgb(icc: &[u8], rgb: &mut [u8]) {
 }
 
 /// Resize so the long edge is `long_edge`; never upscales.
-fn fit_long_edge(img: RgbImage, long_edge: u32) -> RgbImage {
+pub(crate) fn fit_long_edge(img: RgbImage, long_edge: u32) -> RgbImage {
     let (w, h) = img.dimensions();
     if w.max(h) <= long_edge {
         return img;
@@ -286,7 +285,7 @@ fn fit_long_edge(img: RgbImage, long_edge: u32) -> RgbImage {
     imageops::resize(&img, nw, nh, FilterType::Lanczos3)
 }
 
-fn encode_jpeg(img: &RgbImage, quality_pct: u8) -> Result<Vec<u8>> {
+pub(crate) fn encode_jpeg(img: &RgbImage, quality_pct: u8) -> Result<Vec<u8>> {
     let mut buf = Vec::with_capacity((img.width() * img.height()) as usize / 4);
     JpegEncoder::new_with_quality(&mut buf, quality_pct.clamp(1, 100)).encode_image(img)?;
     Ok(buf)
@@ -294,7 +293,7 @@ fn encode_jpeg(img: &RgbImage, quality_pct: u8) -> Result<Vec<u8>> {
 
 /// Write via a hidden `.partial` file and rename, so a crash never leaves a
 /// half-written deliverable under the real name.
-fn write_atomic(dst: &Path, bytes: &[u8]) -> Result<()> {
+pub(crate) fn write_atomic(dst: &Path, bytes: &[u8]) -> Result<()> {
     if let Some(parent) = dst.parent()
         && !parent.as_os_str().is_empty()
     {
@@ -489,353 +488,11 @@ fn stamp(img: &mut RgbImage, text: &str) {
 }
 
 // ---------------------------------------------------------------------------
-// Contact sheet
-// ---------------------------------------------------------------------------
-
-const PAGE_W: f32 = 612.0; // US Letter, points
-const PAGE_H: f32 = 792.0;
-const MARGIN: f32 = 36.0;
-const COLS: usize = 4;
-const MAX_ROWS: usize = 5;
-const GUTTER: f32 = 10.0;
-const THUMB_BOX_H: f32 = 85.0; // 3:2 box at the cell width
-const CAPTION_H: f32 = 14.0;
-const FOOTER_TOP: f32 = 48.0;
-const THUMB_LONG_EDGE: u32 = 400;
-const THUMB_QUALITY: u8 = 80;
-const MAX_HEADER_LINES: usize = 30;
-
-struct Thumb {
-    w: u32,
-    h: u32,
-    jpeg: Vec<u8>,
-}
-
-fn make_thumb(p: &Path) -> Option<Thumb> {
-    if !is_jpeg_name(p) {
-        return None;
-    }
-    let r = catch_unwind(AssertUnwindSafe(|| -> Result<Thumb> {
-        let img = fit_long_edge(load_rgb(p, THUMB_LONG_EDGE)?, THUMB_LONG_EDGE);
-        Ok(Thumb { w: img.width(), h: img.height(), jpeg: encode_jpeg(&img, THUMB_QUALITY)? })
-    }));
-    r.ok().and_then(Result::ok)
-}
-
-/// Write a US Letter contact sheet: `title`, then `lines` (address, APN,
-/// date, counts…), then a 4 × 5 grid of thumbnails per page with each file
-/// name underneath. Files that are not JPEGs or cannot be decoded get a
-/// "no preview" box so the count still matches.
-pub fn contact_sheet_pdf(dst: &Path, title: &str, lines: &[String], images: &[PathBuf]) -> Result<()> {
-    let thumbs = par_map(images, |p| make_thumb(p));
-    let lines: Vec<&str> = lines.iter().map(String::as_str).take(MAX_HEADER_LINES).collect();
-
-    let cell_w = (PAGE_W - 2.0 * MARGIN - GUTTER * (COLS as f32 - 1.0)) / COLS as f32;
-    let cell_h = THUMB_BOX_H + CAPTION_H;
-    let pitch = cell_h + GUTTER;
-    let rows_fit = |grid_top: f32| (((grid_top - FOOTER_TOP + GUTTER) / pitch).floor() as usize).clamp(1, MAX_ROWS);
-
-    // Page 1 header: title + lines + rule. Later pages: running title + rule.
-    let title_y = PAGE_H - MARGIN - 16.0;
-    let first_line_y = title_y - 20.0;
-    let rule1_y =
-        if lines.is_empty() { title_y - 10.0 } else { first_line_y - 13.0 * (lines.len() as f32 - 1.0) - 9.0 };
-    let grid1_top = rule1_y - 12.0;
-    let run_title_y = PAGE_H - MARGIN - 11.0;
-    let rule_n_y = run_title_y - 8.0;
-    let gridn_top = rule_n_y - 12.0;
-    let per1 = rows_fit(grid1_top) * COLS;
-    let pern = rows_fit(gridn_top) * COLS;
-    let n = images.len();
-    let pages = if n <= per1 { 1 } else { 1 + (n - per1).div_ceil(pern) };
-
-    // Object ids: 1 catalog, 2 pages, 3 Helvetica, 4 Helvetica-Bold, 5 info,
-    // then one per thumbnail, then (page, content) pairs.
-    let mut img_ids = Vec::with_capacity(n);
-    let mut next_id = 6;
-    for t in &thumbs {
-        img_ids.push(t.as_ref().map(|_| {
-            next_id += 1;
-            next_id - 1
-        }));
-    }
-    let page_ids: Vec<(usize, usize)> = (0..pages).map(|i| (next_id + 2 * i, next_id + 2 * i + 1)).collect();
-    let mut pdf = Pdf::new(next_id + 2 * pages);
-
-    pdf.obj(1, b"<< /Type /Catalog /Pages 2 0 R >>");
-    let kids: String = page_ids.iter().map(|(p, _)| format!("{p} 0 R ")).collect();
-    pdf.obj(2, format!("<< /Type /Pages /Kids [{kids}] /Count {pages} >>").as_bytes());
-    pdf.obj(3, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>");
-    pdf.obj(4, b"<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding >>");
-    let now = chrono::Local::now().format("D:%Y%m%d%H%M%S");
-    pdf.obj(5, format!("<< /Title {} /Producer (dji-offload) /CreationDate ({now}) >>", utf16_hex(title)).as_bytes());
-    for (t, id) in thumbs.iter().zip(&img_ids) {
-        if let (Some(t), Some(id)) = (t, id) {
-            let dict = format!(
-                "/Type /XObject /Subtype /Image /Width {} /Height {} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode",
-                t.w, t.h
-            );
-            pdf.stream(*id, &dict, &t.jpeg);
-        }
-    }
-
-    let text_w = PAGE_W - 2.0 * MARGIN;
-    let mut idx = 0;
-    for (pi, &(page_id, content_id)) in page_ids.iter().enumerate() {
-        let mut c: Vec<u8> = Vec::new();
-        let (grid_top, per) = if pi == 0 {
-            text(&mut c, Face::Bold, 16.0, MARGIN, title_y, &fit_end(title, Face::Bold, 16.0, text_w), 0.0);
-            for (i, l) in lines.iter().enumerate() {
-                let y = first_line_y - 13.0 * i as f32;
-                text(&mut c, Face::Regular, 9.5, MARGIN, y, &fit_end(l, Face::Regular, 9.5, text_w), 0.15);
-            }
-            rule(&mut c, rule1_y);
-            (grid1_top, per1)
-        } else {
-            text(&mut c, Face::Bold, 11.0, MARGIN, run_title_y, &fit_end(title, Face::Bold, 11.0, text_w), 0.0);
-            rule(&mut c, rule_n_y);
-            (gridn_top, pern)
-        };
-        if n == 0 {
-            text(&mut c, Face::Regular, 10.0, MARGIN, grid_top - 12.0, "No photos.", 0.4);
-        }
-
-        let mut xobjects = String::new();
-        for slot in 0..per {
-            if idx >= n {
-                break;
-            }
-            let (row, col) = (slot / COLS, slot % COLS);
-            let x = MARGIN + col as f32 * (cell_w + GUTTER);
-            let box_bottom = grid_top - row as f32 * pitch - THUMB_BOX_H;
-            match (&thumbs[idx], img_ids[idx]) {
-                (Some(t), Some(id)) => {
-                    let s = (cell_w / t.w as f32).min(THUMB_BOX_H / t.h as f32);
-                    let (dw, dh) = (t.w as f32 * s, t.h as f32 * s);
-                    let (dx, dy) = (x + (cell_w - dw) / 2.0, box_bottom + (THUMB_BOX_H - dh) / 2.0);
-                    let _ = writeln!(xobjects, "/Im{id} {id} 0 R");
-                    c.extend_from_slice(format!("q {dw:.2} 0 0 {dh:.2} {dx:.2} {dy:.2} cm /Im{id} Do Q\n").as_bytes());
-                }
-                _ => {
-                    c.extend_from_slice(
-                        format!("q 0.93 g {x:.2} {box_bottom:.2} {cell_w:.2} {THUMB_BOX_H:.2} re f Q\n").as_bytes(),
-                    );
-                    let msg = "no preview";
-                    let mw = text_width(msg, Face::Regular, 8.0);
-                    let my = box_bottom + THUMB_BOX_H / 2.0 - 3.0;
-                    text(&mut c, Face::Regular, 8.0, x + (cell_w - mw) / 2.0, my, msg, 0.45);
-                }
-            }
-            let name = images[idx].file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            let name = fit_middle(&name, Face::Regular, 7.0, cell_w);
-            let nw = text_width(&name, Face::Regular, 7.0);
-            text(&mut c, Face::Regular, 7.0, x + (cell_w - nw) / 2.0, box_bottom - 9.0, &name, 0.25);
-            idx += 1;
-        }
-
-        // Footer.
-        let foot = format!("Page {} of {pages}", pi + 1);
-        let fw = text_width(&foot, Face::Regular, 8.0);
-        text(&mut c, Face::Regular, 8.0, PAGE_W - MARGIN - fw, 24.0, &foot, 0.45);
-        let left = fit_end(title, Face::Regular, 8.0, text_w - fw - 20.0);
-        text(&mut c, Face::Regular, 8.0, MARGIN, 24.0, &left, 0.45);
-
-        pdf.stream(content_id, "", &c);
-        let page = format!(
-            "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {PAGE_W} {PAGE_H}] \
-             /Resources << /Font << /F1 3 0 R /F2 4 0 R >> /XObject << {} >> >> /Contents {content_id} 0 R >>",
-            xobjects.replace('\n', " ")
-        );
-        pdf.obj(page_id, page.as_bytes());
-    }
-
-    write_atomic(dst, &pdf.finish(1, 5))
-}
-
-/// Minimal PDF 1.4 writer: numbered objects, a classic xref table.
-struct Pdf {
-    buf: Vec<u8>,
-    offsets: Vec<usize>,
-}
-
-impl Pdf {
-    fn new(objects: usize) -> Pdf {
-        let mut buf = Vec::new();
-        buf.extend_from_slice(b"%PDF-1.4\n%\xE2\xE3\xCF\xD3\n");
-        Pdf { buf, offsets: vec![0; objects] }
-    }
-
-    fn obj(&mut self, id: usize, body: &[u8]) {
-        self.offsets[id] = self.buf.len();
-        self.buf.extend_from_slice(format!("{id} 0 obj\n").as_bytes());
-        self.buf.extend_from_slice(body);
-        self.buf.extend_from_slice(b"\nendobj\n");
-    }
-
-    fn stream(&mut self, id: usize, dict: &str, data: &[u8]) {
-        let mut body = format!("<< {dict} /Length {} >>\nstream\n", data.len()).into_bytes();
-        body.extend_from_slice(data);
-        body.extend_from_slice(b"\nendstream");
-        self.obj(id, &body);
-    }
-
-    fn finish(mut self, root: usize, info: usize) -> Vec<u8> {
-        let xref = self.buf.len();
-        let n = self.offsets.len();
-        let mut t = format!("xref\n0 {n}\n0000000000 65535 f \n");
-        for &off in &self.offsets[1..] {
-            let _ = writeln!(t, "{off:010} 00000 n ");
-        }
-        let _ = write!(t, "trailer\n<< /Size {n} /Root {root} 0 R /Info {info} 0 R >>\nstartxref\n{xref}\n%%EOF\n");
-        self.buf.extend_from_slice(t.as_bytes());
-        self.buf
-    }
-}
-
-#[derive(Clone, Copy, PartialEq)]
-enum Face {
-    Regular,
-    Bold,
-}
-
-fn rule(c: &mut Vec<u8>, y: f32) {
-    let x2 = PAGE_W - MARGIN;
-    c.extend_from_slice(format!("q 0.75 G 0.5 w {MARGIN} {y:.2} m {x2} {y:.2} l S Q\n").as_bytes());
-}
-
-fn text(c: &mut Vec<u8>, face: Face, size: f32, x: f32, y: f32, s: &str, grey: f32) {
-    let f = if face == Face::Bold { "F2" } else { "F1" };
-    c.extend_from_slice(format!("BT {grey} g /{f} {size} Tf {x:.2} {y:.2} Td (").as_bytes());
-    for b in s.chars().map(win_ansi) {
-        if matches!(b, b'(' | b')' | b'\\') {
-            c.push(b'\\');
-        }
-        c.push(b);
-    }
-    c.extend_from_slice(b") Tj ET\n");
-}
-
-/// PDF text string as UTF-16BE hex, for the document info dictionary.
-fn utf16_hex(s: &str) -> String {
-    let mut out = String::from("<FEFF");
-    for u in s.encode_utf16() {
-        let _ = write!(out, "{u:04X}");
-    }
-    out.push('>');
-    out
-}
-
-/// Map a char to its WinAnsiEncoding byte ('?' when not representable).
-fn win_ansi(c: char) -> u8 {
-    let u = c as u32;
-    match u {
-        0x20..=0x7E | 0xA0..=0xFF => u as u8,
-        _ => match c {
-            '€' => 0x80,
-            '‚' => 0x82,
-            'ƒ' => 0x83,
-            '„' => 0x84,
-            '…' => 0x85,
-            '†' => 0x86,
-            '‡' => 0x87,
-            'ˆ' => 0x88,
-            '‰' => 0x89,
-            'Š' => 0x8A,
-            '‹' => 0x8B,
-            'Œ' => 0x8C,
-            'Ž' => 0x8E,
-            '‘' => 0x91,
-            '’' => 0x92,
-            '“' => 0x93,
-            '”' => 0x94,
-            '•' => 0x95,
-            '–' => 0x96,
-            '—' => 0x97,
-            '˜' => 0x98,
-            '™' => 0x99,
-            'š' => 0x9A,
-            '›' => 0x9B,
-            'œ' => 0x9C,
-            'ž' => 0x9E,
-            'Ÿ' => 0x9F,
-            '\t' => b' ',
-            _ => b'?',
-        },
-    }
-}
-
-// Helvetica and Helvetica-Bold advance widths (1/1000 em) for ASCII 32..=126,
-// from the Adobe AFM files. Other characters are estimated at 556.
-const HELV: [u16; 95] = [
-    278, 278, 355, 556, 556, 889, 667, 191, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556,
-    556, 556, 556, 278, 278, 584, 584, 584, 556, 1015, 667, 667, 722, 722, 667, 611, 778, 722, 278, 500, 667, 556, 833,
-    722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 278, 278, 278, 469, 556, 333, 556, 556, 500, 556,
-    556, 278, 556, 556, 222, 222, 500, 222, 833, 556, 556, 556, 556, 333, 500, 278, 556, 500, 722, 500, 500, 500, 334,
-    260, 334, 584,
-];
-const HELV_BOLD: [u16; 95] = [
-    278, 333, 474, 556, 556, 889, 722, 238, 333, 333, 389, 584, 278, 333, 278, 278, 556, 556, 556, 556, 556, 556, 556,
-    556, 556, 556, 333, 333, 584, 584, 584, 611, 975, 722, 722, 722, 722, 667, 611, 778, 722, 278, 556, 722, 611, 833,
-    722, 778, 667, 778, 722, 667, 611, 722, 667, 944, 667, 667, 611, 333, 278, 333, 584, 556, 333, 556, 611, 556, 611,
-    556, 333, 611, 611, 278, 278, 556, 278, 889, 611, 611, 611, 611, 389, 556, 333, 611, 556, 778, 556, 556, 500, 389,
-    280, 389, 584,
-];
-
-fn text_width(s: &str, face: Face, size: f32) -> f32 {
-    let table = if face == Face::Bold { &HELV_BOLD } else { &HELV };
-    let units: u32 = s
-        .chars()
-        .map(|c| match c as u32 {
-            u @ 0x20..=0x7E => table[(u - 0x20) as usize] as u32,
-            _ => 556,
-        })
-        .sum();
-    units as f32 * size / 1000.0
-}
-
-/// Truncate at the end with an ellipsis to fit `max` points.
-fn fit_end(s: &str, face: Face, size: f32, max: f32) -> String {
-    if text_width(s, face, size) <= max {
-        return s.to_string();
-    }
-    let mut v: Vec<char> = s.chars().collect();
-    while !v.is_empty() {
-        v.pop();
-        let t: String = v.iter().collect::<String>() + "…";
-        if text_width(&t, face, size) <= max {
-            return t;
-        }
-    }
-    "…".to_string()
-}
-
-/// Truncate in the middle (keeps the extension and frame number visible).
-fn fit_middle(s: &str, face: Face, size: f32, max: f32) -> String {
-    if text_width(s, face, size) <= max {
-        return s.to_string();
-    }
-    let v: Vec<char> = s.chars().collect();
-    let (mut a, mut b) = (v.len() / 2, v.len() / 2);
-    while a > 0 || b < v.len() {
-        if (a > 0 && a >= v.len() - b) || b >= v.len() {
-            a -= 1;
-        } else {
-            b += 1;
-        }
-        let t: String = v[..a].iter().chain(['…'].iter()).chain(v[b..].iter()).collect();
-        if text_width(&t, face, size) <= max {
-            return t;
-        }
-    }
-    "…".to_string()
-}
-
-// ---------------------------------------------------------------------------
 // Parallel map
 // ---------------------------------------------------------------------------
 
 /// Map `f` over `items` on all cores, keeping order.
-fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+pub(crate) fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
     let n = items.len();
     if n == 0 {
         return Vec::new();
@@ -1111,64 +768,7 @@ mod tests {
     }
 
     #[test]
-    fn contact_sheet_pages_and_size() {
-        let dir = tempfile::tempdir().unwrap();
-        let mut imgs = Vec::new();
-        for i in 0..25u32 {
-            let p = dir.path().join(format!("DJI_20260428182706_{i:04}_D.JPG"));
-            let img = RgbImage::from_fn(1800, 1200, |x, y| {
-                Rgb([(x / 7 + i * 9) as u8, (y / 5) as u8, ((x ^ y) % 251) as u8])
-            });
-            save_jpeg(&p, &img, 90);
-            imgs.push(p);
-        }
-        // A video in the list gets a "no preview" box rather than an error.
-        let mp4 = dir.path().join("DJI_20260428182800_0026_D.MP4");
-        fs::write(&mp4, b"video").unwrap();
-        imgs.push(mp4);
-
-        let out = dir.path().join("sheet.pdf");
-        let lines = vec![
-            "123 Example Rd, Faketown AZ".to_string(),
-            "APN 000-00-000 · 2026-04-28".to_string(),
-            "25 photos, 1 video — “quoted” (parens) \\ back".to_string(),
-        ];
-        contact_sheet_pdf(&out, "Flight 1 — Contact sheet", &lines, &imgs).unwrap();
-        let pdf = fs::read(&out).unwrap();
-        assert!(pdf.starts_with(b"%PDF"));
-        assert!(pdf.len() < 10_000_000, "{} bytes", pdf.len());
-        let s = String::from_utf8_lossy(&pdf);
-        let pages = s.matches("/Type /Page ").count();
-        assert!(pages > 1, "pages {pages}");
-        assert!(s.contains(&format!("/Count {pages}")));
-        assert_eq!(s.matches("/Subtype /Image").count(), 25);
-        assert!(s.contains("(no preview)"));
-
-        // The xref table points at the right objects.
-        let tail = String::from_utf8_lossy(&pdf[pdf.len() - 64..]).into_owned();
-        let sx = tail.rfind("startxref\n").unwrap();
-        let xref: usize = tail[sx + 10..].lines().next().unwrap().parse().unwrap();
-        let table = std::str::from_utf8(&pdf[xref..]).unwrap();
-        assert!(table.starts_with("xref\n0 "));
-        let mut objects = 0;
-        for (id, line) in table.lines().skip(3).take_while(|l| l.ends_with(" n ")).enumerate() {
-            let off: usize = line[..10].parse().unwrap();
-            assert!(pdf[off..].starts_with(format!("{} 0 obj\n", id + 1).as_bytes()), "object {}", id + 1);
-            objects += 1;
-        }
-        assert!(objects > 25);
-    }
-
-    #[test]
-    fn text_helpers() {
-        assert_eq!(win_ansi('—'), 0x97);
-        assert_eq!(win_ansi('é'), 0xE9);
-        assert_eq!(win_ansi('漢'), b'?');
-        let long = "DJI_20260428182706_0001_D_with_a_very_long_suffix.JPG";
-        let t = fit_middle(long, Face::Regular, 7.0, 100.0);
-        assert!(text_width(&t, Face::Regular, 7.0) <= 100.0);
-        assert!(t.starts_with("DJI_") && t.ends_with(".JPG") && t.contains('…'), "{t}");
-        assert_eq!(fit_end("short", Face::Bold, 10.0, 500.0), "short");
+    fn median_helper() {
         assert_eq!(median(&[3.0, 1.0, 2.0]), 2.0);
         assert_eq!(median(&[4.0, 1.0, 2.0, 3.0]), 2.5);
     }
@@ -1212,15 +812,5 @@ mod tests {
         let t = std::time::Instant::now();
         watermark(&photos[0], &out.path().join("m.jpg"), 1600, "© Sample — not for use").unwrap();
         println!("watermark 1600: {:.0} ms", t.elapsed().as_secs_f64() * 1e3);
-        let sheet: Vec<PathBuf> = photos.iter().take(30).cloned().collect();
-        let t = std::time::Instant::now();
-        contact_sheet_pdf(&out.path().join("s.pdf"), "Bench", &[], &sheet).unwrap();
-        let size = fs::metadata(out.path().join("s.pdf")).unwrap().len();
-        println!(
-            "contact sheet ({} photos): {:.2} s, {:.2} MB",
-            sheet.len(),
-            t.elapsed().as_secs_f64(),
-            size as f64 / 1e6
-        );
     }
 }

@@ -15,10 +15,14 @@ mod kml;
 mod ledger;
 mod macos;
 mod media;
+mod naming;
 mod offload;
 mod outputs;
+#[allow(dead_code)] // a small general-purpose PDF toolkit; not every primitive is used yet
+mod pdfkit;
 mod records;
 mod report;
+mod report_pdf;
 mod space;
 mod wipe;
 
@@ -339,7 +343,6 @@ fn process_flight(
     notify: bool,
 ) -> Result<()> {
     let report = if cfg.field_checks { Some(outputs::field_checks(dir, label, place, lookup)?) } else { None };
-    let flagged = report.as_ref().map(|r| r.flagged.clone()).unwrap_or_default();
     if let Some(r) = &report {
         println!("{label}: {}", r.headline());
         if notify {
@@ -347,7 +350,19 @@ fn process_flight(
             macos::notify(title, &format!("Flight {}: {}", flight.num, r.headline()));
         }
     }
-    let notes = outputs::build(dir, flight, place, job, cfg, &flagged)?;
+    let ctx = outputs::BuildCtx {
+        dir,
+        flight,
+        place,
+        job,
+        cfg,
+        lookup,
+        checks: report.as_ref(),
+        fingerprint: fingerprint(cfg, dir),
+        parcel_date: lookup.and_then(|l| l.updated()).map(|u| u.chars().take(10).collect()),
+        videos: count_ext(dir, &["MP4", "MOV"]),
+    };
+    let notes = outputs::build(&ctx)?;
     if !notes.is_empty() {
         println!("{label}: {}", notes.join("; "));
         if notify {
@@ -355,6 +370,43 @@ fn process_flight(
         }
     }
     Ok(())
+}
+
+fn count_ext(dir: &std::path::Path, exts: &[&str]) -> usize {
+    fs::read_dir(dir)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| {
+                    let n = e.file_name().to_string_lossy().to_uppercase();
+                    !n.starts_with('.') && exts.iter().any(|x| n.ends_with(&format!(".{x}")))
+                })
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+/// BLAKE3 over the sorted (name, hash) list of a flight's verified originals,
+/// shown on the report so a client copy can be matched to the archive.
+fn fingerprint(cfg: &Config, dir: &std::path::Path) -> Option<String> {
+    let ledger = ledger::Ledger::open(&state_dir().ok()?.join("ledger.db")).ok()?;
+    let dest = cfg.destination.display().to_string();
+    let mut lines = Vec::new();
+    for e in fs::read_dir(dir).ok()?.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        let Ok(meta) = e.metadata() else { continue };
+        if !meta.is_file() {
+            continue;
+        }
+        if let Ok(Some((_, hash))) = ledger.copy_record(&dest, &format!("{name}:{}", meta.len())) {
+            lines.push(format!("{name} {hash}"));
+        }
+    }
+    if lines.is_empty() {
+        return None;
+    }
+    lines.sort();
+    let h = blake3::hash(lines.join("\n").as_bytes()).to_hex().to_string();
+    Some(format!("{} {} {} {}", &h[0..8], &h[8..16], &h[16..24], &h[24..32]).to_uppercase())
 }
 
 fn rebuild_records(cfg: &Config, ledger: &ledger::Ledger) -> Result<()> {

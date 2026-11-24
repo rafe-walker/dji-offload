@@ -61,8 +61,14 @@ for any DJI drone anywhere.
 - **Knows who a flight is for.** A dialog asks whether a flight is for a
   **client**, the **library** (already-flown catalog), **promo** (your own
   marketing), or any mix. Then:
-  - *Client* → `Delivery - <address> - <date>/` with web-sized photos (no GPS
-    in the files), a contact-sheet PDF, the map and the shoot summary.
+  - *Client* → `Delivery - <address> - <date>/` with:
+    - a branded **Aerial Report** PDF: cover with the best shot, a vector site
+      map of the parcel with every photo position, captioned photo pages, a
+      photo index and a capture/data-integrity appendix;
+    - web-sized photos **renamed by what they show**, e.g.
+      `100-Example-Rd_014_aerial-from-sw_looking-ne_golden-hour.jpg`, with
+      camera file names and device/location metadata removed;
+    - `Photo index.csv` and a Google Earth map.
   - *Library* → `Library Sample/` watermarked previews for prospective buyers,
     plus a row in `Library/catalog.csv` (APN, address, acres, jurisdiction,
     date, counts).
@@ -94,7 +100,7 @@ offload there as well.
 | --- | --- |
 | `dji-offload run` | Offload any connected drone now (`--dry-run` to preview) |
 | `dji-offload tag FLIGHT [--client NAME] [--library] [--promo] [--package P] [--ask] [--clear]` | Say who a flight is for and (re)build its deliverables |
-| `dji-offload set wipe ask` | Change a setting: `wipe` (never/ask/always), `ask-job` (ask/never), `watermark TEXT`, `checks` (on/off), `gap`, `low-space`, `eject`, `parcels`, `destination` |
+| `dji-offload set wipe ask` | Change a setting: `wipe` (never/ask/always), `ask-job` (ask/never), `watermark TEXT`, `checks` (on/off), `rename` (on/off), `report-photos N`, `brand-name/tagline/url/phone/email/logo/dark/accent`, `gap`, `low-space`, `eject`, `parcels`, `destination` |
 | `dji-offload status` | Settings, destinations, parcel data age, connected drones |
 | `dji-offload parcels update` | Refresh the offline parcel and city-limits data |
 | `dji-offload parcels lookup LAT LON` | Look up the parcel at a point |
