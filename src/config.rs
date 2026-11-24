@@ -70,6 +70,55 @@ pub fn config_path() -> Result<PathBuf> {
 }
 
 impl Config {
+    pub fn save(&self) -> Result<()> {
+        fs::write(config_path()?, toml::to_string_pretty(self)?)?;
+        Ok(())
+    }
+
+    /// Change one setting by a friendly name. Returns a confirmation line.
+    pub fn set(&mut self, key: &str, value: &str) -> Result<String> {
+        let yes = |v: &str| -> Result<bool> {
+            match v.to_lowercase().as_str() {
+                "on" | "yes" | "true" => Ok(true),
+                "off" | "no" | "false" => Ok(false),
+                _ => anyhow::bail!("use on or off"),
+            }
+        };
+        let msg = match key {
+            "wipe" => {
+                let v = value.to_lowercase();
+                if !matches!(v.as_str(), "never" | "ask" | "always") {
+                    anyhow::bail!("wipe must be never, ask or always");
+                }
+                self.wipe_after_offload = v.clone();
+                format!("Drone wipe after offload: {v}")
+            }
+            "gap" => {
+                self.flight_gap_minutes = value.parse().context("gap is a number of minutes")?;
+                format!("New flight after a gap of {} min", self.flight_gap_minutes)
+            }
+            "low-space" => {
+                self.low_space_warn_gb = value.parse().context("low-space is a number of GB")?;
+                format!("Low-space warning under {} GB", self.low_space_warn_gb)
+            }
+            "eject" => {
+                self.eject_when_done = yes(value)?;
+                format!("Eject after offload: {}", if self.eject_when_done { "on" } else { "off" })
+            }
+            "parcels" => {
+                self.parcels = yes(value)?;
+                format!("Parcel tagging: {}", if self.parcels { "on" } else { "off" })
+            }
+            "destination" => {
+                self.destination = PathBuf::from(value);
+                format!("Main copy goes to {}", self.destination.display())
+            }
+            _ => anyhow::bail!("unknown setting `{key}`; try wipe, gap, low-space, eject, parcels or destination"),
+        };
+        self.save()?;
+        Ok(msg)
+    }
+
     pub fn load() -> Result<Self> {
         let p = config_path()?;
         if !p.exists() {
@@ -106,5 +155,12 @@ mod tests {
         assert_eq!((c.flight_gap_minutes, c.wipe_after_offload.as_str()), (12, "never"));
         let text = fs::read_to_string(d.path().join("config.toml")).unwrap();
         assert!(text.contains("wipe_after_offload") && text.contains("flight_gap_minutes = 12"), "{text}");
+
+        let mut c = Config::load().unwrap();
+        c.set("wipe", "Ask").unwrap();
+        assert!(c.set("wipe", "sometimes").is_err());
+        c.set("eject", "off").unwrap();
+        let c = Config::load().unwrap();
+        assert_eq!((c.wipe_after_offload.as_str(), c.eject_when_done), ("ask", false));
     }
 }

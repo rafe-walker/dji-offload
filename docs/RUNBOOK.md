@@ -111,6 +111,8 @@ under `low_space_warn_gb` (default 20) gets a "storage low" notification.
   drone*. It defaults to keeping, and keeps if nobody answers in two minutes.
 - `"always"`: delete without asking.
 
+Change it any time with `dji-offload set wipe never|ask|always`.
+
 A drone file is deleted only when **every destination used in that run** has
 a ledger record for it, and the copy on disk re-hashes to the hash taken
 while it streamed off the drone. Corrupted, missing or partial copies keep

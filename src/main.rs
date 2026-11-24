@@ -84,6 +84,10 @@ enum Cmd {
     Uninstall,
     /// Show settings, destinations and parcel database age.
     Status,
+    /// Change a setting, e.g. `set wipe ask` (never | ask | always),
+    /// `set gap 10`, `set low-space 20`, `set eject off`, `set parcels on`,
+    /// `set destination /Volumes/T7/Drone`.
+    Set { key: String, value: String },
 }
 
 #[derive(Subcommand)]
@@ -436,6 +440,10 @@ fn main() -> Result<()> {
         Cmd::Uninstall => {
             macos::uninstall()?;
             println!("Removed the launchd agent. Your footage and settings were not touched.");
+            Ok(())
+        }
+        Cmd::Set { key, value } => {
+            println!("{}", Config::load()?.set(&key, &value)?);
             Ok(())
         }
         Cmd::Status => {

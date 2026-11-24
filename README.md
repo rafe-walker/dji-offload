@@ -73,6 +73,7 @@ offload there as well.
 | Command | What it does |
 | --- | --- |
 | `dji-offload run` | Offload any connected drone now (`--dry-run` to preview) |
+| `dji-offload set wipe ask` | Change a setting: `wipe` (never/ask/always), `gap`, `low-space`, `eject`, `parcels`, `destination` |
 | `dji-offload status` | Settings, destinations, parcel data age, connected drones |
 | `dji-offload parcels update` | Refresh the offline parcel and city-limits data |
 | `dji-offload parcels lookup LAT LON` | Look up the parcel at a point |
@@ -82,7 +83,8 @@ offload there as well.
 | `dji-offload wipe [--yes]` | Delete files from the drone that are verified on every destination |
 | `dji-offload install` / `uninstall` | Turn the automatic run on or off |
 
-Settings live in `~/Library/Application Support/dji-offload/config.toml`.
+Settings live in `~/Library/Application Support/dji-offload/config.toml`;
+`dji-offload set` changes the common ones without editing the file.
 How it works, operations and troubleshooting: [docs/RUNBOOK.md](docs/RUNBOOK.md).
 
 ## Data sources
