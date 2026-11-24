@@ -177,7 +177,8 @@ cargo test        # unit + end-to-end tests (synthetic drone, fictional parcels)
 cargo clippy
 ```
 
-CI runs the tests on Linux and macOS. Tagged releases (`v*`) build a
-universal (arm64 + x86_64) macOS binary with signed build provenance.
+CI runs the tests on Linux and macOS. Publishing a GitHub Release (tag `v*`)
+builds a universal (arm64 + x86_64) macOS binary, attaches it to the release
+and records signed build provenance.
 
 Test fixtures use fictional APNs, addresses and coordinates only.

@@ -3,8 +3,9 @@ name: ci
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
+  release:
+    types: [published]
 
 permissions:
   contents: read
@@ -24,7 +25,7 @@ jobs:
       - run: cargo clippy --locked -- -D warnings
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'release'
     needs: test
     runs-on: macos-latest
     permissions:
@@ -52,9 +53,9 @@ jobs:
       - uses: actions/attest-build-provenance@v2
         with:
           subject-path: dji-offload-macos-universal.tar.gz
-      - name: Publish release
+      - name: Attach binaries to the release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" --generate-notes \
+          gh release upload "$GITHUB_REF_NAME" --clobber \
             dji-offload-macos-universal.tar.gz dji-offload-macos-universal.tar.gz.sha256
