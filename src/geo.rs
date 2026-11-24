@@ -217,6 +217,30 @@ pub fn insert_cities(db: &Connection, page: &Value) -> Result<usize> {
     Ok(n)
 }
 
+fn get_json(agent: &ureq::Agent, url: &str) -> Result<Value> {
+    let mut tries = 0;
+    loop {
+        tries += 1;
+        let res = agent
+            .get(url)
+            .call()
+            .and_then(|mut r| r.body_mut().with_config().limit(64 << 20).read_to_string());
+        match res {
+            Ok(body) => {
+                let v: Value = serde_json::from_str(&body).context("parsing server response")?;
+                if let Some(err) = v.get("error") {
+                    bail!("server error: {err}");
+                }
+                return Ok(v);
+            }
+            Err(_) if tries < 4 => std::thread::sleep(Duration::from_secs(2 * tries)),
+            Err(e) => return Err(e).with_context(|| format!("downloading {url}")),
+        }
+    }
+}
+
+/// Download every feature of a layer, `WORKERS` pages at a time, handing
+/// each page to `store` on this thread (SQLite stays single-threaded).
 fn fetch_all(
     agent: &ureq::Agent,
     base: &str,
@@ -224,39 +248,42 @@ fn fetch_all(
     mut store: impl FnMut(&Value) -> Result<usize>,
     progress: &mut dyn FnMut(usize),
 ) -> Result<usize> {
-    let mut offset = 0;
-    let mut total = 0;
-    loop {
-        let url = format!(
-            "{base}/query?where=1%3D1&outFields={fields}&outSR=4326&orderByFields=OBJECTID\
-             &resultOffset={offset}&resultRecordCount={PAGE}&f=geojson"
-        );
-        let mut tries = 0;
-        let page: Value = loop {
-            tries += 1;
-            match agent.get(&url).call().and_then(|mut r| r.body_mut().with_config().limit(64 << 20).read_to_string()) {
-                Ok(body) => break serde_json::from_str(&body).context("parsing parcel page")?,
-                Err(e) if tries < 4 => {
-                    std::thread::sleep(Duration::from_secs(2 * tries));
-                    let _ = e;
+    const WORKERS: usize = 4;
+    let count = get_json(agent, &format!("{base}/query?where=1%3D1&returnCountOnly=true&f=json"))?["count"]
+        .as_u64()
+        .context("no feature count")? as usize;
+    let pages: Vec<usize> = (0..count).step_by(PAGE).collect();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let (tx, rx) = std::sync::mpsc::channel::<Result<Value>>();
+    std::thread::scope(|scope| -> Result<usize> {
+        for _ in 0..WORKERS.min(pages.len()) {
+            let tx = tx.clone();
+            let (next, pages) = (&next, &pages);
+            scope.spawn(move || {
+                loop {
+                    let i = next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let Some(&offset) = pages.get(i) else { break };
+                    let url = format!(
+                        "{base}/query?where=1%3D1&outFields={fields}&outSR=4326&orderByFields=OBJECTID\
+                         &resultOffset={offset}&resultRecordCount={PAGE}&f=geojson"
+                    );
+                    let page = get_json(agent, &url).with_context(|| format!("page at offset {offset}"));
+                    let failed = page.is_err();
+                    if tx.send(page).is_err() || failed {
+                        break;
+                    }
                 }
-                Err(e) => return Err(e).with_context(|| format!("downloading {base} at offset {offset}")),
-            }
-        };
-        if let Some(err) = page.get("error") {
-            bail!("server error from {base}: {err}");
+            });
         }
-        let got = page["features"].as_array().map_or(0, Vec::len);
-        total += store(&page)?;
-        progress(total);
-        let more = page["properties"]["exceededTransferLimit"].as_bool().unwrap_or(false)
-            || page["exceededTransferLimit"].as_bool().unwrap_or(false);
-        if got == 0 || (!more && got < PAGE) {
-            break;
+        drop(tx);
+        let mut total = 0;
+        for page in rx {
+            let page = page?;
+            total += store(&page)?;
+            progress(total);
         }
-        offset += got;
-    }
-    Ok(total)
+        Ok(total)
+    })
 }
 
 /// Download parcels and city limits into `db_path` (written to a temp file and
