@@ -1,0 +1,60 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - run: cargo test --locked
+      - run: cargo clippy --locked -- -D warnings
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: macos-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - name: Build universal binary
+        env:
+          MACOSX_DEPLOYMENT_TARGET: "11.0"
+        run: |
+          cargo build --locked --release --target aarch64-apple-darwin
+          cargo build --locked --release --target x86_64-apple-darwin
+          mkdir -p dist
+          lipo -create -output dist/dji-offload \
+            target/aarch64-apple-darwin/release/dji-offload \
+            target/x86_64-apple-darwin/release/dji-offload
+          dist/dji-offload --version
+          tar -C dist -czf dji-offload-macos-universal.tar.gz dji-offload
+          shasum -a 256 dji-offload-macos-universal.tar.gz > dji-offload-macos-universal.tar.gz.sha256
+      - uses: actions/attest-build-provenance@v2
+        with:
+          subject-path: dji-offload-macos-universal.tar.gz
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --generate-notes \
+            dji-offload-macos-universal.tar.gz dji-offload-macos-universal.tar.gz.sha256
