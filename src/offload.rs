@@ -22,6 +22,8 @@ pub struct Summary {
     pub copied_bytes: u64,
     pub skipped: usize,
     pub errors: Vec<String>,
+    /// Non-fatal notices (low space).
+    pub warnings: Vec<String>,
     /// e.g. "2026-04-28/Flight-1_1827_APN-999-12-345A"
     pub folders: BTreeSet<String>,
 }
@@ -134,6 +136,17 @@ impl Offloader<'_> {
         // 3. Copy and verify, destination by destination.
         let mut written: BTreeSet<(usize, usize)> = BTreeSet::new(); // (dest, flight)
         for (di, dest) in self.dests.iter().enumerate() {
+            let mut needed = 0u64;
+            for f in &pending {
+                if !self.ledger.is_copied(&dest_keys[di], &f.key())? {
+                    needed += f.size;
+                }
+            }
+            if !self.dry_run
+                && let Some(msg) = crate::space::shortfall(dest, needed) {
+                    sum.errors.push(msg);
+                    continue;
+                }
             for f in &pending {
                 if self.ledger.is_copied(&dest_keys[di], &f.key())? {
                     continue;
@@ -163,6 +176,12 @@ impl Offloader<'_> {
                     }
                     Err(e) => sum.errors.push(format!("{}: {e:#}", f.name)),
                 }
+            }
+        }
+
+        for dest in &self.dests {
+            if let Some(w) = crate::space::low(dest, self.cfg.low_space_warn_gb) {
+                sum.warnings.push(w);
             }
         }
 

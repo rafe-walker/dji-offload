@@ -13,13 +13,15 @@ pub struct Source {
 
 /// File that marks an external drive as an offload destination.
 pub const DEST_MARKER: &str = ".dji-offload-destination";
+/// File that marks an external drive as a backup-sweep target.
+pub const BACKUP_MARKER: &str = ".dji-offload-backup";
 
 /// Is this volume DJI media? We need a `DCIM/` folder holding a DJI-style
 /// subfolder (`DJI_001`, `100MEDIA`, ...). Volume names are useless: the
 /// Mavic 4 Pro mounts as "Untitled".
 pub fn inspect(mount: &Path) -> Option<Source> {
-    if mount.join(DEST_MARKER).exists() {
-        return None; // our own backup drive, never a source
+    if mount.join(DEST_MARKER).exists() || mount.join(BACKUP_MARKER).exists() {
+        return None; // our own destination or backup drive, never a source
     }
     let dcim = mount.join("DCIM");
     let rd = fs::read_dir(&dcim).ok()?;
@@ -59,16 +61,21 @@ pub fn sources(root: &Path) -> Vec<Source> {
     v
 }
 
-/// External drives the user marked as destinations (`dji-offload mark-drive`).
-pub fn marked_destinations(root: &Path) -> Vec<PathBuf> {
+fn marked(root: &Path, marker: &str) -> Vec<PathBuf> {
     let Ok(rd) = fs::read_dir(root) else { return vec![] };
-    let mut v: Vec<PathBuf> = rd
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.join(DEST_MARKER).exists())
-        .collect();
+    let mut v: Vec<PathBuf> = rd.flatten().map(|e| e.path()).filter(|p| p.join(marker).exists()).collect();
     v.sort();
     v
+}
+
+/// External drives the user marked as destinations (`dji-offload mark-drive`).
+pub fn marked_destinations(root: &Path) -> Vec<PathBuf> {
+    marked(root, DEST_MARKER)
+}
+
+/// External drives the user marked for backup sweeps (`dji-offload mark-backup`).
+pub fn marked_backups(root: &Path) -> Vec<PathBuf> {
+    marked(root, BACKUP_MARKER)
 }
 
 #[cfg(test)]

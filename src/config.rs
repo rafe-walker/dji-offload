@@ -25,6 +25,15 @@ pub struct Config {
     pub parcel_refresh_days: i64,
     /// Where drives mount.
     pub volumes_root: PathBuf,
+    /// Clear the drone after a clean offload: "never", "ask" (dialog) or "always".
+    /// Files are deleted only when every connected destination has a verified copy.
+    pub wipe_after_offload: String,
+    /// Warn when a destination drops below this much free space.
+    pub low_space_warn_gb: f64,
+    /// Where backup mode looks for DJI files on this Mac.
+    pub backup_scan_roots: Vec<PathBuf>,
+    /// Folder created on backup drives.
+    pub backup_folder: String,
 }
 
 impl Default for Config {
@@ -38,6 +47,10 @@ impl Default for Config {
             parcels: true,
             parcel_refresh_days: 30,
             volumes_root: PathBuf::from("/Volumes"),
+            wipe_after_offload: "never".into(),
+            low_space_warn_gb: 20.0,
+            backup_scan_roots: vec![dirs::home_dir().unwrap_or_default()],
+            backup_folder: "Drone Backup".into(),
         }
     }
 }

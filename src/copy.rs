@@ -24,6 +24,11 @@ fn hash_file(path: &Path) -> Result<blake3::Hash> {
     Ok(h.finalize())
 }
 
+/// BLAKE3 of a file, as hex.
+pub fn hash_hex(path: &Path) -> Result<String> {
+    Ok(hash_file(path)?.to_hex().to_string())
+}
+
 pub enum Outcome {
     Copied(String),
     AlreadyThere(String),

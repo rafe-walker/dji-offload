@@ -17,8 +17,8 @@ If the notification says **"problems"**, do **not** format the drone. Read the
 log (section 6), fix the cause, and plug in again. Files that already verified
 are not copied again.
 
-Formatting the drone after an offload is a manual choice. The tool never
-deletes anything, on the drone or on the Mac.
+By default the tool never deletes anything, on the drone or on the Mac.
+Clearing the drone is opt-in (`wipe_after_offload`, section 2).
 
 ## 2. How it works
 
@@ -33,8 +33,12 @@ mount event (launchd StartOnMount)
        ├─ flights: assign new files to flights (10-min gap rule)
        ├─ place: GPS → parcel + city from the offline database
        ├─ copy: hash-while-copy → re-read → compare → rename
+       ├─ space: skip a destination that can't fit the new footage
        ├─ shoot-info.txt per flight folder, per destination
+       ├─ low-space warning for any destination under 20 GB
+       ├─ wipe (if enabled): delete only files verified on every destination
        ├─ notify, eject
+       ├─ backup sweep onto any mounted backup drive
        └─ refresh the parcel data if older than 30 days and online
 ```
 
@@ -94,6 +98,53 @@ not the parcel's location, so it is deliberately not used.
 - The ledger records `(destination, file name + size) → hash` only after
   verification.
 
+### Free space
+Before copying to a destination, the bytes still to copy there are summed
+and compared with the space available, keeping 512 MB of head-room. If it
+won't fit, nothing is copied to that destination, the offload reports a
+problem, and the drone is not wiped. After the offload, any destination
+under `low_space_warn_gb` (default 20) gets a "storage low" notification.
+
+### Clearing the drone (`wipe_after_offload`)
+- `"never"` (default): nothing is deleted.
+- `"ask"`: after a clean offload a dialog asks *Keep on drone* / *Wipe
+  drone*. It defaults to keeping, and keeps if nobody answers in two minutes.
+- `"always"`: delete without asking.
+
+A drone file is deleted only when **every destination used in that run** has
+a ledger record for it, and the copy on disk re-hashes to the hash taken
+while it streamed off the drone. Corrupted, missing or partial copies keep
+the original. `.LRF` previews go only together with their verified video.
+Only files under `DCIM/` are touched; the drone's `MISC/` index is left for
+the drone to rebuild. `dji-offload wipe` shows the plan without `--yes`.
+
+The drone's own *Format* is still the cleanest reset now and then. Use it
+after you've confirmed your backups.
+
+### Backup mode
+A drive marked with `mark-backup` (marker `.dji-offload-backup`) is never a
+source or an offload destination. Whenever one is mounted, and after every
+offload:
+1. **Find:** walk `backup_scan_roots` (default: your home folder) plus the
+   offload destinations for files named `DJI_*` with a media extension (JPG,
+   JPEG, DNG, MP4, MOV, SRT). Hidden folders, `~/Library`, app bundles and
+   Photos libraries are skipped, as are the backup drive and any connected
+   drone.
+2. **Match:** index the backup by file name and size, then confirm with
+   BLAKE3. Hashes are cached by path, size and modified time, so only new or
+   changed files are hashed on later sweeps.
+3. **Copy:** missing files are copied with the same verified copy. Footage
+   under `~/Drone` (or a mirror drive) keeps its `date/flight` folder; files
+   found anywhere else go to `<date>/Found/`. Copies sorted by dji-offload
+   are handled first, so a stray duplicate never displaces the sorted one. If
+   the backup already has a **different** file under the same name, both are
+   kept: the new one goes to `conflicts/<hash>_<name>`.
+4. **Report:** a notification shows how many files were checked, copied and
+   already present, plus a low-space warning when needed.
+
+macOS may ask once whether `dji-offload` can read your Desktop, Documents or
+Downloads during the first sweep. Allow it, or those folders are skipped.
+
 ## 3. Files and settings
 
 | Path | What |
@@ -116,6 +167,10 @@ skip_extensions = ["LRF"]            # DJI low-res previews
 parcels = true
 parcel_refresh_days = 30
 volumes_root = "/Volumes"
+wipe_after_offload = "never"         # "never" | "ask" | "always"
+low_space_warn_gb = 20.0
+backup_scan_roots = ["/Users/<you>"]
+backup_folder = "Drone Backup"       # folder created on backup drives
 ```
 
 Set `DJI_OFFLOAD_HOME` to use a different state folder (handy for testing).
@@ -162,6 +217,9 @@ First-run prompts on macOS:
 | Folder has no `_APN-` | Look at `shoot-info.txt`: no GPS, no parcel database, or outside Cochise County. |
 | "problems" notification | `tail -50 ~/Library/Logs/dji-offload.log`, then plug in again. Verified files are skipped. |
 | Want to re-copy everything | Delete `ledger.db`. Existing identical files are recognised by hash and not duplicated. |
+| "Not enough space" | Free space on that destination, or unplug it so the rest can proceed. The drone is not wiped while any copy is missing. |
+| Wipe left files on the drone | `dji-offload wipe` lists each kept file and why (not copied to a destination, copy missing or changed). |
+| Backup skipped a folder | Grant the macOS privacy prompt for Desktop/Documents/Downloads, or add the folder to `backup_scan_roots`. |
 
 Manual run with full output:
 

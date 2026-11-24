@@ -40,6 +40,18 @@ for any DJI drone anywhere.
 - **Backs up to an external drive too.** Mark a drive once and every offload
   also lands there whenever it is plugged in. A drive plugged in later catches
   up on everything it missed.
+- **Can clear the drone for you (opt-in).** Set `wipe_after_offload` to
+  `"ask"` (a Keep / Wipe dialog) or `"always"`. A file is deleted only when
+  every connected destination holds a copy whose hash, re-read from disk,
+  still matches. Anything unverified stays on the drone.
+- **Watches free space.** Before copying it checks that the footage fits
+  (plus head-room); a destination without room is skipped with a warning
+  instead of filling up. After each offload it warns when any destination
+  drops below 20 GB free.
+- **Backup mode.** Mark a second drive with `mark-backup`. Whenever it is
+  plugged in, the Mac is swept for every DJI file (by name), each one is
+  matched against the backup by size and BLAKE3 hash, and anything missing is
+  copied over, keeping the date/flight folders.
 - **Tells you when it's done.** A notification shows how many files and GB were
   verified, then the drone is ejected so it's safe to unplug.
 
@@ -64,7 +76,10 @@ offload there as well.
 | `dji-offload status` | Settings, destinations, parcel data age, connected drones |
 | `dji-offload parcels update` | Refresh the offline parcel and city-limits data |
 | `dji-offload parcels lookup LAT LON` | Look up the parcel at a point |
-| `dji-offload mark-drive PATH` / `unmark-drive PATH` | Add or remove an external backup drive |
+| `dji-offload mark-drive PATH` / `unmark-drive PATH` | Mirror every offload onto an external drive |
+| `dji-offload mark-backup PATH` / `unmark-backup PATH` | Backup mode: sweep the Mac onto this drive whenever it is plugged in |
+| `dji-offload backup [--to PATH] [--dry-run]` | Run a backup sweep now |
+| `dji-offload wipe [--yes]` | Delete files from the drone that are verified on every destination |
 | `dji-offload install` / `uninstall` | Turn the automatic run on or off |
 
 Settings live in `~/Library/Application Support/dji-offload/config.toml`.

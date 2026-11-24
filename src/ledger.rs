@@ -23,7 +23,8 @@ impl Ledger {
             "PRAGMA journal_mode=WAL;
              CREATE TABLE IF NOT EXISTS copied(dest TEXT, key TEXT, rel TEXT, hash TEXT, at TEXT, PRIMARY KEY(dest, key));
              CREATE TABLE IF NOT EXISTS flights(date TEXT, num INTEGER, start TEXT, end TEXT, folder TEXT, place TEXT, PRIMARY KEY(date, num));
-             CREATE TABLE IF NOT EXISTS file_flight(key TEXT PRIMARY KEY, date TEXT, num INTEGER);",
+             CREATE TABLE IF NOT EXISTS file_flight(key TEXT PRIMARY KEY, date TEXT, num INTEGER);
+             CREATE TABLE IF NOT EXISTS hash_cache(path TEXT PRIMARY KEY, size INTEGER, mtime INTEGER, hash TEXT);",
         )?;
         Ok(Self { db })
     }
@@ -34,6 +35,46 @@ impl Ledger {
             .query_row("SELECT 1 FROM copied WHERE dest=?1 AND key=?2", params![dest, key], |_| Ok(()))
             .optional()?
             .is_some())
+    }
+
+    /// (relative path, hash) of a verified copy at `dest`.
+    pub fn copy_record(&self, dest: &str, key: &str) -> Result<Option<(String, String)>> {
+        Ok(self
+            .db
+            .query_row("SELECT rel, hash FROM copied WHERE dest=?1 AND key=?2", params![dest, key], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .optional()?)
+    }
+
+    /// Hash of `path`, reusing the cached value while size and mtime are unchanged.
+    pub fn cached_hash(&self, path: &Path) -> Result<String> {
+        let meta = std::fs::metadata(path)?;
+        let size = meta.len() as i64;
+        let mtime = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_nanos() as i64)
+            .unwrap_or(0);
+        let key = path.display().to_string();
+        let hit: Option<String> = self
+            .db
+            .query_row(
+                "SELECT hash FROM hash_cache WHERE path=?1 AND size=?2 AND mtime=?3",
+                params![key, size, mtime],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(h) = hit {
+            return Ok(h);
+        }
+        let h = crate::copy::hash_hex(path)?;
+        self.db.execute(
+            "INSERT OR REPLACE INTO hash_cache VALUES (?1, ?2, ?3, ?4)",
+            params![key, size, mtime, h],
+        )?;
+        Ok(h)
     }
 
     pub fn record_copy(&self, dest: &str, key: &str, rel: &str, hash: &str) -> Result<()> {

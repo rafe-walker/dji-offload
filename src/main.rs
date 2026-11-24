@@ -2,6 +2,7 @@
 //! verified and sorted into dated, per-flight folders tagged with the parcel
 //! they were shot over.
 
+mod backup;
 mod config;
 mod copy;
 mod detect;
@@ -12,6 +13,8 @@ mod macos;
 mod media;
 mod offload;
 mod report;
+mod space;
+mod wipe;
 
 use std::fs;
 use std::path::PathBuf;
@@ -55,6 +58,26 @@ enum Cmd {
     MarkDrive { path: PathBuf },
     /// Stop copying onto a previously marked drive.
     UnmarkDrive { path: PathBuf },
+    /// Mark a drive for backup mode: whenever it is plugged in, every DJI file
+    /// found on this Mac is checked and any missing ones are copied to it.
+    MarkBackup { path: PathBuf },
+    /// Stop using a drive for backup mode.
+    UnmarkBackup { path: PathBuf },
+    /// Run a backup sweep now onto marked backup drives (or `--to PATH`).
+    Backup {
+        #[arg(long)]
+        to: Option<PathBuf>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Delete already-verified files from the connected drone.
+    Wipe {
+        #[arg(long)]
+        source: Option<PathBuf>,
+        /// Actually delete. Without it, only shows what would be removed.
+        #[arg(long)]
+        yes: bool,
+    },
     /// Run automatically whenever the drone is plugged in (macOS launchd agent).
     Install,
     /// Remove the launchd agent. Copied footage is never touched.
@@ -124,6 +147,10 @@ fn run(source: Option<PathBuf>, dry_run: bool, no_eject: bool, auto: bool) -> Re
         if !auto {
             println!("No DJI drone or card found under {}.", cfg.volumes_root.display());
         }
+        if !dry_run && !detect::marked_backups(&cfg.volumes_root).is_empty() {
+            let ledger = ledger::Ledger::open(&state_dir()?.join("ledger.db"))?;
+            run_backups(&cfg, &ledger, None, false)?;
+        }
         return Ok(());
     }
     let dests = offload::destinations(&cfg);
@@ -161,6 +188,9 @@ fn run(source: Option<PathBuf>, dry_run: bool, no_eject: bool, auto: bool) -> Re
             );
             continue;
         }
+        for w in &sum.warnings {
+            macos::notify("Drone offload: storage low", w);
+        }
         let folders = sum.folders.iter().cloned().collect::<Vec<_>>().join(", ");
         if sum.copied == 0 {
             macos::notify("Drone offload", "Nothing new on the drone. Safe to unplug.");
@@ -174,12 +204,33 @@ fn run(source: Option<PathBuf>, dry_run: bool, no_eject: bool, auto: bool) -> Re
                 ),
             );
         }
+        let mode = cfg.wipe_after_offload.to_lowercase();
+        if mode == "ask" || mode == "always" {
+            let plan = wipe::plan(&ledger, &src.mount, &dests, &cfg.skip_extensions)?;
+            if !plan.delete.is_empty() && (mode == "always" || wipe::ask(plan.delete.len(), plan.bytes)) {
+                let (n, errs) = wipe::execute(&plan);
+                for e in &errs {
+                    eprintln!("wipe error: {e}");
+                }
+                macos::notify(
+                    "Drone offload: drone cleared",
+                    &format!("Deleted {n} verified files ({}) from the drone.", space::gb(plan.bytes)),
+                );
+            }
+            if !plan.keep.is_empty() {
+                println!("{} files left on the drone (not verified on every destination).", plan.keep.len());
+            }
+        }
         if cfg.eject_when_done && !no_eject {
             match macos::eject(&src.mount) {
                 Ok(()) => println!("Ejected {}. Safe to unplug.", src.mount.display()),
                 Err(e) => eprintln!("could not eject: {e:#}"),
             }
         }
+    }
+
+    if !dry_run {
+        run_backups(&cfg, &ledger, None, false)?;
     }
 
     // Refresh the parcel copy in the background of a successful run, if stale.
@@ -198,6 +249,64 @@ fn run(source: Option<PathBuf>, dry_run: bool, no_eject: bool, auto: bool) -> Re
             match geo::update(&parcel_db()?, &mut |_, _| {}) {
                 Ok((p, c)) => println!("Parcel data refreshed: {p} parcels, {c} cities."),
                 Err(e) => println!("Parcel refresh skipped (offline?): {e:#}"),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Backup sweep onto every marked backup drive (or just `to`).
+fn run_backups(cfg: &Config, ledger: &ledger::Ledger, to: Option<PathBuf>, dry_run: bool) -> Result<()> {
+    let drives = match to {
+        Some(p) => vec![p],
+        None => detect::marked_backups(&cfg.volumes_root),
+    };
+    if drives.is_empty() {
+        return Ok(());
+    }
+    let mut sorted_roots = vec![cfg.destination.clone()];
+    for d in detect::marked_destinations(&cfg.volumes_root) {
+        sorted_roots.push(d.join(&cfg.external_folder));
+    }
+    let mut roots = cfg.backup_scan_roots.clone();
+    for r in &sorted_roots {
+        if !roots.iter().any(|x| r.starts_with(x)) {
+            roots.push(r.clone());
+        }
+    }
+    for drive in drives {
+        let target = drive.join(&cfg.backup_folder);
+        let mut exclude = vec![drive.clone()];
+        exclude.extend(detect::sources(&cfg.volumes_root).into_iter().map(|s| s.mount));
+        println!("Backup: scanning this Mac for DJI files…");
+        let found = backup::find(&roots, &exclude);
+        let needed = backup::estimate(&found, &target);
+        if !dry_run
+            && let Some(msg) = space::shortfall(&target, needed) {
+                macos::notify("Drone backup: not enough space", &msg);
+                continue;
+            }
+        let mut log = |s: &str| println!("{s}");
+        let r = backup::sweep(ledger, &found, &target, &sorted_roots, dry_run, &mut log)?;
+        for e in &r.errors {
+            eprintln!("backup error: {e}");
+        }
+        let name = drive.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+        let msg = format!(
+            "Checked {} files: {} new ({}) backed up to {name}, {} already there{}{}.",
+            r.found,
+            r.copied,
+            space::gb(r.copied_bytes),
+            r.already,
+            if r.conflicts > 0 { format!(", {} name clashes kept side by side", r.conflicts) } else { String::new() },
+            if r.errors.is_empty() { String::new() } else { format!(", {} errors (see log)", r.errors.len()) },
+        );
+        if dry_run {
+            println!("{msg}");
+        } else {
+            macos::notify("Drone backup", &msg);
+            if let Some(w) = space::low(&target, cfg.low_space_warn_gb) {
+                macos::notify("Drone backup: storage low", &w);
             }
         }
     }
@@ -249,6 +358,62 @@ fn main() -> Result<()> {
             println!("Unmarked {}.", path.display());
             Ok(())
         }
+        Cmd::MarkBackup { path } => {
+            if !path.is_dir() {
+                bail!("{} is not a mounted drive", path.display());
+            }
+            if path.join(detect::DEST_MARKER).exists() {
+                bail!("{} is already an offload destination; unmark it first", path.display());
+            }
+            fs::write(path.join(detect::BACKUP_MARKER), "dji-offload backs up drone footage here\n")?;
+            println!("Marked as a backup drive. Plugging it in will back up every DJI file on this Mac to {}.", path.join(Config::load()?.backup_folder).display());
+            Ok(())
+        }
+        Cmd::UnmarkBackup { path } => {
+            let m = path.join(detect::BACKUP_MARKER);
+            if m.exists() {
+                fs::remove_file(m)?;
+            }
+            println!("Unmarked {}.", path.display());
+            Ok(())
+        }
+        Cmd::Backup { to, dry_run } => {
+            let cfg = Config::load()?;
+            let ledger = ledger::Ledger::open(&state_dir()?.join("ledger.db"))?;
+            if to.is_none() && detect::marked_backups(&cfg.volumes_root).is_empty() {
+                bail!("no backup drive marked; use `mark-backup PATH` or `backup --to PATH`");
+            }
+            run_backups(&cfg, &ledger, to, dry_run)
+        }
+        Cmd::Wipe { source, yes } => {
+            let cfg = Config::load()?;
+            let src = match source {
+                Some(p) => detect::inspect(&p).with_context(|| format!("{} has no DJI DCIM folder", p.display()))?,
+                None => detect::sources(&cfg.volumes_root).into_iter().next().context("no DJI drone connected")?,
+            };
+            let ledger = ledger::Ledger::open(&state_dir()?.join("ledger.db"))?;
+            let dests = offload::destinations(&cfg);
+            let plan = wipe::plan(&ledger, &src.mount, &dests, &cfg.skip_extensions)?;
+            println!(
+                "{} files ({}) are verified on every destination and can be deleted; {} would stay.",
+                plan.delete.len(),
+                space::gb(plan.bytes),
+                plan.keep.len()
+            );
+            for (name, why) in plan.keep.iter().take(10) {
+                println!("  keep {name}: {why}");
+            }
+            if !yes {
+                println!("Nothing deleted. Re-run with --yes to delete.");
+                return Ok(());
+            }
+            let (n, errs) = wipe::execute(&plan);
+            for e in &errs {
+                eprintln!("error: {e}");
+            }
+            println!("Deleted {n} files from {}.", src.mount.display());
+            Ok(())
+        }
         Cmd::Install => {
             let plist = macos::install(&state_dir()?)?;
             println!("Installed launchd agent: {}", plist.display());
@@ -273,7 +438,14 @@ fn main() -> Result<()> {
             for d in offload::destinations(&cfg) {
                 println!("Destination:   {}", d.display());
             }
+            for d in detect::marked_backups(&cfg.volumes_root) {
+                println!("Backup drive:  {}", d.join(&cfg.backup_folder).display());
+            }
+            if let Some(free) = space::available(&cfg.destination) {
+                println!("Free space:    {} at {}", space::gb(free), cfg.destination.display());
+            }
             println!("Flight gap:    {} min", cfg.flight_gap_minutes);
+            println!("Wipe drone:    {}", cfg.wipe_after_offload);
             match open_lookup(&cfg) {
                 Some(l) => println!("Parcels:       local copy from {}", l.updated().unwrap_or_default()),
                 None => println!("Parcels:       not downloaded (dji-offload parcels update)"),
