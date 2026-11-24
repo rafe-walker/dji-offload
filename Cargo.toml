@@ -2,7 +2,7 @@
 name = "dji-offload"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.89"
 description = "Plug in a DJI drone: verified offload into dated, per-flight, parcel-tagged folders (offline Cochise County APN lookup)"
 license = "Apache-2.0"
 repository = "https://github.com/rafe-walker/dji-offload"

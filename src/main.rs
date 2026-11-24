@@ -15,7 +15,6 @@ mod report;
 
 use std::fs;
 use std::path::PathBuf;
-use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
@@ -68,7 +67,8 @@ enum Cmd {
 enum ParcelCmd {
     /// Download the latest Cochise County parcels and city limits (needs internet).
     Update,
-    /// Look up the parcel at a point, offline.
+    /// Look up the parcel at a point, offline (e.g. `lookup 31.55 -110.27`).
+    #[command(allow_negative_numbers = true)]
     Lookup { lat: f64, lon: f64 },
 }
 
@@ -87,29 +87,21 @@ fn open_lookup(cfg: &Config) -> Option<geo::Lookup> {
     geo::Lookup::open(&p).ok()
 }
 
-/// One offload at a time; launchd fires once per mount.
-struct Lock(PathBuf);
+/// One offload at a time; launchd fires once per mount. An OS file lock is
+/// released automatically if the process dies, so a crash never wedges it.
+struct Lock(#[allow(dead_code)] fs::File);
 impl Lock {
     fn take() -> Result<Option<Lock>> {
-        let p = state_dir()?.join("run.lock");
-        if let Ok(pid) = fs::read_to_string(&p) {
-            let alive = Command::new("kill")
-                .args(["-0", pid.trim()])
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false);
-            if alive {
-                return Ok(None);
-            }
+        let f = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(state_dir()?.join("run.lock"))?;
+        match f.try_lock() {
+            Ok(()) => Ok(Some(Lock(f))),
+            Err(fs::TryLockError::WouldBlock) => Ok(None),
+            Err(fs::TryLockError::Error(e)) => Err(e.into()),
         }
-        fs::write(&p, std::process::id().to_string())?;
-        Ok(Some(Lock(p)))
-    }
-}
-impl Drop for Lock {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.0);
     }
 }
 

@@ -25,7 +25,7 @@ deletes anything, on the drone or on the Mac.
 ```
 mount event (launchd StartOnMount)
   └─ dji-offload run --auto
-       ├─ lock (one run at a time; launchd fires once per mount)
+       ├─ lock (OS file lock: one run at a time, released if a run dies)
        ├─ detect: /Volumes/* with DCIM/DJI_* (or *MEDIA) folders
        │          skip drives carrying .dji-offload-destination
        ├─ scan DCIM → files + capture time
